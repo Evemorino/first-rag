@@ -106,6 +106,7 @@ def _repo_commits(repo: str, day: date) -> list[RawMaterial]:
     try:
         out = subprocess.run(  # noqa: S603 — fixed argv, user-configured repo list
             ["git", "-C", repo, "log", f"--since={since}", f"--until={until}",
+             "--date=iso-strict",
              "--pretty=format:%H%x00%ad%x00%s%x00%b%x1e"],
             capture_output=True, text=True, timeout=30, check=True,
         ).stdout

@@ -1,4 +1,4 @@
-.PHONY: up down serve sync ask log scope embed-test test
+.PHONY: up down serve sync ask log scope embed-test test redistill
 
 # Infrastructure: the only container is Qdrant (PRD §6, constitution VI)
 up:
@@ -32,6 +32,12 @@ scope:
 # --- On-demand API shell (ADR-4: not a daemon) ---
 serve:
 	uvicorn src.api.app:app --port 8300
+
+# --- Redistill diff / apply (US-5, FR-023) ---
+#   diff only:  make redistill D=2026-09-18
+#   replace:    make redistill D=2026-09-18 APPLY=1
+redistill:
+	python -m src.redistill $(if $(D),D=$(D)) $(if $(APPLY),--apply)
 
 test:
 	pytest

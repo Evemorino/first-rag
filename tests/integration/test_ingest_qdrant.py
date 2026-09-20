@@ -15,6 +15,21 @@ from src import config, ids, ingest
 TEST_COLLECTION = "learning_memory_test_t014"
 
 
+def _qdrant_available() -> bool:
+    try:
+        QdrantClient(url=config.QDRANT_URL, trust_env=False, timeout=2).get_collections()
+        return True
+    except Exception:  # noqa: BLE001 — any transport failure means "not up"
+        return False
+
+
+# Real-server test: skipped (reported as skipped, not failed) until `make up`
+# has Qdrant running; the embedded-Qdrant integration tests cover the
+# multi-source pipeline meanwhile.
+pytestmark = pytest.mark.skipif(
+    not _qdrant_available(), reason="local Qdrant not running (make up)")
+
+
 def make_entry(text: str) -> ingest.Entry:
     return ingest.Entry(
         text=text,
