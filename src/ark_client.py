@@ -25,3 +25,6 @@ def embed_texts(client: OpenAI, model: str, texts: list[str]) -> list[list[float
         )
 
     return vectors
+
+
+## 应该怎么使用这个函数
