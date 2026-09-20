@@ -1,0 +1,46 @@
+{
+  "types": [
+    {"name": "progress", "desc": "Concretely advanced work: implemented, fixed, decided. Has observable outcome."},
+    {"name": "error", "desc": "A failure worth remembering: what broke, root cause, the fix that worked."},
+    {"name": "idea", "desc": "A thought not yet acted on: hypothesis, question, future direction."},
+    {"name": "reflection", "desc": "Meta-learning: what the day's struggle taught about how I work."}
+  ],
+  "distill": {
+    "include_signals": [
+      "errors and their root causes",
+      "decisions made and why",
+      "new concepts or tools understood for the first time",
+      "repeated struggles (same problem hitting the retry threshold)"
+    ],
+    "exclude_signals": [
+      "routine file edits and formatting",
+      "passing test runs without surprises",
+      "dependency installation logs"
+    ],
+    "examples": {
+      "keep": [
+        "Spent 3 rounds on Qdrant upsert 409, root cause was dimension mismatch between collection and embedding model",
+        "Chose uuid5 over uuid4 for entry IDs to make re-sync idempotent"
+      ],
+      "drop": [
+        "Ran pytest, 42 passed",
+        "pip install completed"
+      ]
+    },
+    "novelty_threshold": 0.82,
+    "max_entries_per_day": 30,
+    "struggle_rounds": 3,
+    "max_raw_chars": 2000000
+  },
+  "retrieval": {
+    "top_k": 8,
+    "expand": {
+      "mode": "all",
+      "neighbor_limit_per_hit": 2,
+      "context_cap": 12,
+      "neighbor_min_score": null
+    }
+  },
+  "trae_type_map": {"learned": "reflection", "outcome": "progress"},
+  "raw_retention_days": 90
+}

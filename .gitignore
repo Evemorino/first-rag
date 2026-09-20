@@ -1,0 +1,14 @@
+# Runtime data & secrets: permanently ignored, never committed (PRD §6 rule 2)
+.env
+data/
+notes/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# macOS
+.DS_Store

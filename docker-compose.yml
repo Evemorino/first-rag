@@ -1,0 +1,11 @@
+# Only Qdrant is containerized (PRD §6 / constitution VI).
+# App itself reads product source dirs under $HOME, so it stays on the host.
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: first-rag-qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - ./data/qdrant:/qdrant/storage
+    restart: unless-stopped
