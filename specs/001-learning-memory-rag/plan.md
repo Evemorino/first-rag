@@ -69,10 +69,10 @@ first-rag/
 ├─ data/                    # qdrant/ 与 raw/（gitignore，不进 git）
 ├─ src/
 │  ├─ config.py             # 环境变量加载、路径、常量
-│  ├─ ark_client.py         # ★手写：embed(texts) / chat(messages)
-│  ├─ ids.py                # ★手写：uuid5 条目 ID（source|date|content_hash）
-│  ├─ similarity.py         # ★手写：相似度搜索 / 新颖度去重 / 重蒸馏对齐
-│  ├─ distill_prompt.py     # ★手写：蒸馏 prompt 运行时拼装（rubric → prompt）
+│  ├─ ark_client.py         # ★：AI 实现已获用户 2026-09-20 明确授权；embed(texts) / chat(messages)
+│  ├─ ids.py                # ★：AI 实现已获用户 2026-09-20 明确授权；uuid5 条目 ID（source|date|content_hash）
+│  ├─ similarity.py         # ★手写：T017 新颖度去重已获 AI 授权；T027/T037 仍手写
+│  ├─ distill_prompt.py     # ★：AI 实现已获用户 2026-09-20 明确授权；蒸馏 prompt 运行时拼装（rubric → prompt）
 │  ├─ collect.py            # 汇聚各插件 + git + 快记 → DayRaw
 │  ├─ distill.py            # 蒸馏编排（脱敏 → LLM → 类型校验 → 熔断）
 │  ├─ ingest.py             # 嵌入 → upsert → 关联边（调 similarity）
@@ -91,7 +91,7 @@ first-rag/
    └─ integration/          # Qdrant 幂等 / 过滤检索 / 扩展 / 端到端
 ```
 
-（★ = 用户手写模块，宪法 VII；其余可 AI 生成后由用户抽查）
+（★ = 默认用户手写模块，宪法 VII v2.0.0；T004/T012/T015/T017 已获用户 2026-09-20 逐任务明确授权由 AI 实现，其余可 AI 生成后由用户抽查）
 
 **Structure Decision**: 单包平铺（宪法 VI）。插件为目录约定而非独立包；不引入 workspace，判据见宪法 Architecture 节。
 
@@ -133,5 +133,5 @@ first-rag/
 | Ark 嵌入模型 ID 未验证 | M0 一次性真调，维度动态读取建集合 |
 | 产品会话格式漂移 | 解析隔离在插件层；schema_check fixture 防回归 |
 | LLM 输出不稳定 | 重试 + 丢弃策略已定义（FR-012 / §8） |
-| 用户手写进度不可控（宪法 VII） | 里程碑独立可运行，每片完成即有增量价值 |
+| 核心模块默认用户手写，进度不可控（宪法 VII v2.0.0） | 里程碑独立可运行，每片完成即有增量价值；仅在用户逐任务明确授权时允许 AI 代写 |
 | **更换嵌入模型**（F1） | collection 维度绑定模型：新建 collection → 对存量条目全量重嵌入（raw 保留期内的直接重嵌入；超期的回产品源目录重采集，插件只读保证可重放）→ 验证后切换。蒸馏条目不重生成，仅向量重算 |
