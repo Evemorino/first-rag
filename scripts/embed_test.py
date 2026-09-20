@@ -8,6 +8,10 @@ Usage: make embed-test   (requires make up first)
 """
 
 import sys
+from pathlib import Path
+
+# 直接运行脚本时 sys.path[0] 是 scripts/ 而非仓库根，补上项目根
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams

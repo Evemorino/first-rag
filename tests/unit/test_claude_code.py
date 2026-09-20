@@ -66,6 +66,32 @@ def test_discover_missing_dir_is_noop(tmp_path, monkeypatch):
     assert claude_code.discover(DAY) == []
 
 
+def test_discover_warns_on_layout_drift(tmp_path, monkeypatch, caplog):
+    """装了 claude（~/.claude 存在）但 projects/ 缺失 → 版本漂移警告（可观测性）。"""
+    monkeypatch.setattr(claude_code, "SESSIONS_DIR", tmp_path / "projects")
+    monkeypatch.setattr(claude_code, "CLAUDE_HOME", tmp_path / "home")
+    (tmp_path / "home").mkdir()
+
+    with caplog.at_level("WARNING"):
+        assert claude_code.discover(DAY) == []
+
+    assert any("drift" in r.message.lower() or "layout" in r.message.lower()
+               for r in caplog.records
+               if r.name.endswith("claude_code"))
+
+
+def test_parse_ignores_summary_lines(sessions_dir):
+    """文件头部的 summary 行不是学习素材，锁定忽略现状。"""
+    path = write_session(sessions_dir, "proj-a", "s1.jsonl", [
+        _event(TS, "summary", summary="Earlier session about other work"),
+        _user_event(TS, "actual question"),
+    ])
+    from src.plugins import SourceRef
+    mat = claude_code.parse(SourceRef(source="claude_code", ref=str(path), day=DAY))
+    assert "Earlier session" not in mat.text
+    assert "actual question" in mat.text
+
+
 def test_parse_extracts_messages_and_errors(sessions_dir):
     path = write_session(sessions_dir, "proj-a", "s1.jsonl", [
         _user_event(TS, "why did upsert 409"),

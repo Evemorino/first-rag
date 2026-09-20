@@ -16,6 +16,7 @@ from src.plugins import Plugin, RawMaterial, SourceRef
 logger = logging.getLogger(__name__)
 
 SESSIONS_DIR = Path.home() / ".claude" / "projects"
+CLAUDE_HOME = Path.home() / ".claude"
 TZ = timezone(timedelta(hours=8))  # Asia/Shanghai
 
 
@@ -27,7 +28,15 @@ def _as_shanghai(ts: str) -> datetime:
 def discover(day: date) -> list[SourceRef]:
     """One SourceRef per session file touched on `day`. [] if nothing."""
     if not SESSIONS_DIR.is_dir():
-        logger.info("claude_code: %s missing, no-op", SESSIONS_DIR)
+        if CLAUDE_HOME.is_dir():
+            # 装了 claude 但会话不在 projects/ 布局下——版本漂移嫌疑，
+            # 提醒排查而不是静默吞掉（research.md 格式漂移风险）。
+            logger.warning(
+                "claude_code: %s missing while %s exists — session layout "
+                "may have drifted, verify the real path; no-op this run",
+                SESSIONS_DIR, CLAUDE_HOME)
+        else:
+            logger.info("claude_code: %s missing, no-op", SESSIONS_DIR)
         return []
     refs = []
     for path in SESSIONS_DIR.rglob("*.jsonl"):

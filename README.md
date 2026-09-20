@@ -24,6 +24,9 @@ make embed-test                        # 真调验证嵌入模型与维度并建
 
 ## 日常使用
 
+所有 make 目标底层都是 `uv run python -m …`；Windows 上没装 make 时直接用
+等价命令（见 [AGENTS.md](AGENTS.md)）。
+
 ```sh
 make sync                              # 晚上跑一次：当日素材 → 蒸馏 → 入库（幂等可重跑）
 make log m="踩了个坑：..." t=error     # 随手快记（未标类型默认 reflection）

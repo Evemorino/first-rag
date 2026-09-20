@@ -27,7 +27,7 @@
 
 **Independent Test**: 当日真实素材 `make sync` 后库中可查（AC-002）
 
-- [x] T010 [US1] `src/plugins/claude_code/`：按 research.md 格式解析 `~/.claude/projects/**.jsonl`，提取消息/工具报错/struggle 轮次 meta（FR-002；源目录只读——宪法 V）——*6 用例全过（含 struggle 连续计数、跨日过滤）*
+- [x] T010 [US1] `src/plugins/claude_code/`：按 research.md 格式解析 `~/.claude/projects/**.jsonl`，提取消息/工具报错/struggle 轮次 meta（FR-002；源目录只读——宪法 V）——*6 用例全过（含 struggle 连续计数、跨日过滤）*——*v2 增强：~/.claude 存在但 projects/ 缺失时输出 layout drift 警告（本机实测触发）；summary 行忽略锁定为回归测试*
 - [x] T011 [US1] `src/collect.py`：汇聚各插件 discover/parse + git（`config/repos.txt`，FR-003）+ 快记 → `data/raw/YYYY-MM-DD.json`（含蒸馏运行元信息，FR-006）；空日写空快照（§8）。验证：repos.txt 缺失/路径失效 → no-op + 日志（G3 补）——*7 用例全过*
 - [x] T012 ★[US1] `src/ids.py`：uuid5(source|date|content_hash)，含 content_hash 定义（FR-014；NFR-003）——*用户于 2026-09-20 明确授权 AI 实现（宪法 v2.0.0）；5 个单测覆盖 sha256 前 16 位、UUIDv5 公式、确定性、身份变化、空输入拒绝*
 - [x] T013 [US1] `src/ingest.py` 直插路径：embed → upsert（payload 按 data-model.md 全字段）（依赖 T004/T012）——*5 个 fake-client/fake-embed 单测覆盖 Entry 全字段、空输入 no-op、批量 embedding 顺序、确定性 ID、完整 payload、同批去重；真实 Qdrant 集成待 T014*
@@ -37,7 +37,7 @@
 - [x] T017 ★[US1] `src/similarity.py` 新颖度去重：**用户手写（本次授权 AI 实现）**——候选嵌入 → 检索已有 → 超阈值跳过/并入（FR-009）——*12 个 similarity 单测 + 2 个 ingest 接线测试覆盖 collection 缺失、阈值边界、同 ID 重跑、跳过语义重复；好/坏例子见 example/*
 - [x] T018 [US1] 单测：脱敏（伪造密钥 fixture，AC-012）、未知类型（AC-013）、熔断（临时上限 3，AC-014）——*6 个 AC 专项用例（tests/unit/test_distill_ac.py）：AC-012 双路径（快记直并入 + LLM）8 类伪造密钥全链路不泄漏、AC-013 重试一次后丢弃其余保留/可纠正恢复、AC-014 恰好上限无熔断日志/超限截断留日志正常结束*
 - [x] T019 [US1] `src/sync.py`：串联 collect→distill→ingest + `data/.sync.lock` 文件锁 + 到期 raw 清理（FR-022；F2 修复）+ `make sync [D=]` 入口（FR-025）——*18 个单测（tests/unit/test_sync.py）：串联顺序/默认今日、跨平台文件锁（fcntl/msvcrt）运行期互斥+崩溃后释放、retention 90/0/null 三态、scope.json 透传给 gather、CLI D=/裸日期/非法日期/失败非零码；`make sync` 入口就位*
-- [x] T021 [P][US1] `src/plugins/codex/`：按 research.md 解析 rollout-*.jsonl（FR-002）——*7 个单测（tests/unit/test_codex.py）覆盖本地日判定（UTC 目录名≠归属日）、developer 角色丢弃、task_complete/turn_aborted 报错与 struggle 计数、AGENTS.md/<skill> 注入文本过滤；已用本机真实 ~/.codex 数据只读冒烟验证（8 会话/日，转写以真实用户发言开头）*
+- [x] T021 [P][US1] `src/plugins/codex/`：按 research.md 解析 rollout-*.jsonl（FR-002）——*7 个单测（tests/unit/test_codex.py）覆盖本地日判定（UTC 目录名≠归属日）、developer 角色丢弃、task_complete/turn_aborted 报错与 struggle 计数、AGENTS.md/<skill> 注入文本过滤；已用本机真实 ~/.codex 数据只读冒烟验证（8 会话/日，转写以真实用户发言开头）；**v2 增强（同日）**：工具级报错提取（function/custom_tool_call_output 的 str 与内容块列表两种形态，Exit code: N≠0 / execution error / Script failed，成功输出不进转写只用于挣扎归零）、struggle 语义修正（assistant 叙述不打断失败连击，仅工具成功归零）、agent_message 实测为子代理通信锁定跳过；真实数据复测：2026-08-21 单日提取 79 个错误（旧版仅任务级 8/14 全天 8 个）*
 - [x] T022 [P][US1] `src/plugins/kimi_code/`：解析 wd_*/session_*/wire.jsonl（FR-002）——*7 个单测（tests/unit/test_kimi_code.py）覆盖三种 wire 事件形态（flat role/claude 块/typed）、state.json 缺失容错、报错与连续 struggle 计数、本地日判定；⚠️ 本机无 kimi-code 真实数据，wire 形态为容错假设，装了 kimi-code 的机器上需跑一次真实数据冒烟（schema_check）再信任解析*
 - [x] T023 [P][US1] `src/plugins/trae/`：pre-summarized 轻转换 + `trae_type_map` 映射，未匹配默认 reflection（FR-002/013）——*7 个单测（tests/unit/test_trae.py）：每条记录一条素材（discover 按行返回 SourceRef）、text 仅由 learned/outcome 拼装、类型按 map 键序首匹配/未匹配落默认、project 编码不可无歧义还原宁缺毋错；已用本机真实 ~/.trae-cn 数据只读冒烟验证（4 条记录/日，中文内容正确提取）*
 - [x] T024 [P][US1] 各插件 fixture 单测 + integration：四源真实数据混跑（AC-002 多源）——*单测见 test_codex/test_kimi_code/test_trae；integration（test_sync_four_sources.py）用内嵌 Qdrant（:memory:，同 upsert/query 代码路径）跑通六源（四插件+git+manual）端到端 sync：6 条 upsert、source 集合齐全、同日重跑幂等；**并抓出 T011 真实 bug：git log 未加 --date=iso-strict 导致 %ad 非 ISO 解析崩溃，已修**；真实服务器验证保留在 test_ingest_qdrant.py（Qdrant 不可达时 skip，make up 后自动启用）*

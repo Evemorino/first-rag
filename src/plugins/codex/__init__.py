@@ -1,10 +1,18 @@
 """codex plugin: parse ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl (raw path).
 
-真实格式（research.md 实测）：每行 {timestamp, ordinal, type, payload}。
+真实格式（research.md + 本机实测）：每行 {timestamp, ordinal, type, payload}。
 - session_meta / turn_context: cwd、session_id（项目归属）
 - response_item.payload.type=message: role user/assistant 的对话文本
   （role=developer 是系统指令，量大利低，直接丢弃）
-- event_msg: task_complete 带 error、turn_aborted → 工具/任务报错素材
+- response_item 的 function_call_output / custom_tool_call_output:
+  工具执行输出，`Exit code: N≠0` 与 `execution error:` 是工具级报错
+  （真实踩坑信号）；成功输出不进转写（exclude 信号），只用于挣扎归零
+- response_item 的 agent_message: 子代理间通信（author→recipient），
+  不是用户可见内容，跳过（实测确认）
+- event_msg: task_complete 带 error、turn_aborted → 任务级报错素材
+
+struggle 语义（FR-008）：连续失败轮次只在「工具成功输出」时归零；
+assistant 的叙述常常夹在失败重试之间，不打断连击计数。
 时间戳为 UTC，统一折算 Asia/Shanghai 后判定归属日。源目录只读（宪法 V）。
 """
 
@@ -12,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -24,6 +33,38 @@ TZ = timezone(timedelta(hours=8))  # Asia/Shanghai
 
 # 单个会话合并后的转写上限，与 claude_code 插件保持一致
 MAX_SESSION_CHARS = 200000
+
+# 工具输出中的失败信号（本机实测：output 可能是纯字符串，也可能是
+# [{"type": "input_text", "text": …}] 内容块列表；"Exit code" 常出现在
+# "Script error:" 标头之后而非行首，故用非锚定匹配）
+_TOOL_FAILURE_PATTERNS = (
+    re.compile(r"Exit code: [1-9]"),
+    re.compile(r"^execution error", re.M),
+    re.compile(r"^Script failed", re.M),
+)
+
+
+def _tool_output_text(output) -> str:
+    """output 归一化为文本：str 直接用，块列表拼接 text。"""
+    if isinstance(output, str):
+        return output.strip()
+    if isinstance(output, list):
+        return "\n".join(
+            block.get("text", "")
+            for block in output
+            if isinstance(block, dict) and block.get("text")
+        ).strip()
+    return ""
+
+
+def _tool_failure_text(output) -> str:
+    """工具输出中的失败信号：非零退出码/执行错误/脚本失败。成功返回 ''。"""
+    text = _tool_output_text(output)
+    if not text:
+        return ""
+    if any(p.search(text) for p in _TOOL_FAILURE_PATTERNS):
+        return f"[error] {text[:2000]}"
+    return ""
 
 
 def _as_shanghai(ts: str) -> datetime:
@@ -122,14 +163,26 @@ def parse(ref: SourceRef) -> RawMaterial:
                     meta["cwd"] = payload["cwd"]
                 if payload.get("session_id"):
                     meta["session_id"] = payload["session_id"]
-            elif etype == "response_item" and payload.get("type") == "message":
-                role = payload.get("role")
-                if role == "developer":
-                    continue  # 系统指令：体量大、无学习价值
-                text = _content_text(payload.get("content")).strip()
-                if text and not (role == "user" and _is_injected_user_text(text)):
-                    parts.append(text)
-                    error_run = 0 if role == "assistant" else error_run
+            elif etype == "response_item":
+                ptype = payload.get("type")
+                if ptype == "message":
+                    role = payload.get("role")
+                    if role == "developer":
+                        continue  # 系统指令：体量大、无学习价值
+                    text = _content_text(payload.get("content")).strip()
+                    if text and not (role == "user" and _is_injected_user_text(text)):
+                        parts.append(text)
+                        # assistant 叙述不打断失败连击（见模块 docstring）
+                elif ptype in ("function_call_output",
+                               "custom_tool_call_output"):
+                    failure = _tool_failure_text(payload.get("output"))
+                    if failure:
+                        error_count += 1
+                        error_run += 1
+                        struggle = max(struggle, error_run)
+                        parts.append(failure)
+                    else:
+                        error_run = 0  # 工具成功：挣扎结束
             elif etype == "event_msg":
                 message = _event_error_text(payload)
                 if message:

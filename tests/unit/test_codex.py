@@ -55,6 +55,23 @@ def task_error(message):
     })
 
 
+def tool_output(output: str, call_id: str = "c1"):
+    """response_item 的工具输出（真实形态：output 是字符串）。"""
+    return ("response_item", {
+        "type": "function_call_output", "call_id": call_id,
+        "output": output,
+    })
+
+
+def agent_message(text: str):
+    """子代理间通信（author→recipient），不是用户可见内容。"""
+    return ("response_item", {
+        "type": "agent_message", "author": "/root/research",
+        "recipient": "/root",
+        "content": [{"type": "input_text", "text": text}],
+    })
+
+
 # 2026-09-17T16:30Z = 2026-09-18 00:30 Shanghai — belongs to DAY
 # 2026-09-10T02:00Z = 2026-09-10 10:00 Shanghai — other day
 TS = "2026-09-17T16:30:00.000Z"
@@ -167,6 +184,59 @@ def test_parse_drops_injected_user_boilerplate(sessions_dir):
     assert "<skill>" not in mat.text
     assert "<environment_context>" not in mat.text
     assert "$speckit-implement 继续执行" in mat.text
+
+
+# --- 工具级报错提取（真实数据实测形态）---
+
+
+def test_parse_captures_tool_failures_not_successes(sessions_dir):
+    path = write_rollout(sessions_dir, "2026-09-17", "rollout-a.jsonl", [
+        (session_meta(), TS),
+        (tool_output("Exit code: 0\nWall time: 1.0s\nOutput:\n42 passed"), TS),
+        (tool_output("Exit code: 1\nWall time: 2.2s\nOutput:\nTraceback: dimension mismatch"), TS),
+        (tool_output("execution error: Io(Custom { kind: Other, error: \"sandbox denied\" })"), TS),
+        # 本机实测形态：output 是内容块列表，"Exit code" 藏在 "Script error:" 标头后
+        (tool_output([{"type": "input_text", "text": "Script failed\nWall time 1.7 seconds\nOutput:\n"},
+                      {"type": "input_text", "text": "Script error:\nExit code: 2\nOutput:\nValueError"}]), TS),
+    ])
+
+    mat = codex.parse(SourceRef(source="codex", ref=str(path), day=DAY))
+
+    assert mat.meta["error_count"] == 3
+    assert "Exit code: 1" in mat.text
+    assert "sandbox denied" in mat.text
+    assert "ValueError" in mat.text          # 块列表失败也被捕获
+    assert "42 passed" not in mat.text       # 成功输出是 exclude 信号，不进转写
+
+
+def test_struggle_survives_assistant_narration(sessions_dir):
+    """assistant 叙述夹在失败重试之间不打断连击（FR-008 行为证据）。"""
+    path = write_rollout(sessions_dir, "2026-09-17", "rollout-a.jsonl", [
+        (session_meta(), TS),
+        (tool_output("Exit code: 1\nOutput:\nfail", "c1"), TS),
+        (assistant_msg("let me try a different approach"), TS),
+        (tool_output("Exit code: 1\nOutput:\nfail again", "c2"), TS),
+        (tool_output("Exit code: 0\nOutput:\nok", "c3"), TS),  # 成功才归零
+        (tool_output("Exit code: 1\nOutput:\nunrelated later fail", "c4"), TS),
+    ])
+
+    mat = codex.parse(SourceRef(source="codex", ref=str(path), day=DAY))
+
+    assert mat.meta["error_count"] == 3
+    assert mat.meta["struggle_rounds"] == 2  # 2 连击 → 成功归零 → 1
+
+
+def test_agent_message_is_skipped(sessions_dir):
+    path = write_rollout(sessions_dir, "2026-09-17", "rollout-a.jsonl", [
+        (session_meta(), TS),
+        (agent_message("Message Type: FINAL_ANSWER ..."), TS),
+        (user_msg("real user text"), TS),
+    ])
+
+    mat = codex.parse(SourceRef(source="codex", ref=str(path), day=DAY))
+
+    assert "FINAL_ANSWER" not in mat.text
+    assert "real user text" in mat.text
 
 
 def test_registered_in_registry():

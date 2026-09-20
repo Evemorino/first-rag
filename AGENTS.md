@@ -7,6 +7,22 @@
 
 ## 常用命令
 
+Makefile 的每条命令都通过 `uv run` 走项目内 `.venv`，无需手动激活。
+**Windows 机器上没有 make 时**，直接用等价命令（效果相同）：
+
+```sh
+uv run pytest                                # = make test
+uv run python -m src.sync [D=2026-09-18]     # = make sync
+uv run python -m src.log m="想法" [t=idea]   # = make log
+uv run python -m src.ask Q="…" --type error --since 7d   # = make ask
+uv run python -m src.scope                   # = make scope
+uv run python -m src.redistill D=2026-09-18 [--apply]    # = make redistill
+uv run python scripts/embed_test.py          # = make embed-test
+uv run uvicorn src.api.app:app --port 8300   # = make serve
+```
+
+make 可用时的入口：
+
 ```sh
 make up            # 启动 Qdrant（唯一常驻容器）
 make embed-test    # 首次：真调 Ark 验证嵌入模型与维度，建集合
