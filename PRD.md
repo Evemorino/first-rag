@@ -264,13 +264,13 @@
 
 ### 12.2 代码分工（约束）
 
-- **用户手写**（AI 仅 review 与答疑，不代写）：核心逻辑层四模块——`ark_client`（嵌入调用）、相似度搜索与新颖度去重、幂等 ID 生成、蒸馏 prompt。
+- **用户优先手写**（AI 仅 review 与答疑，不代写）：核心逻辑层四模块——`ark_client`（嵌入调用）、相似度搜索与新颖度去重、幂等 ID 生成、蒸馏 prompt。例外：2026-09-20 用户逐任务明确授权 AI 实现 `ark_client`、`ids`、`distill_prompt` 与 `similarity` 的 T017 新颖度去重部分，授权仅限这些任务，须附带测试与验证证据。
 - **AI 生成**（用户抽查理解即可）：脚手架类——Dockerfile / docker-compose、Makefile、FastAPI 路由样板、`.gitignore`、配置文件骨架。
 
 ### 12.3 下游影响
 
 - plan（阶段七）：任务拆分必须按 LG-002 纵切顺序组织。
-- tasks（阶段九）：四个用户手写模块必须显式标注 user-handwritten 并关联本节；排期按用户手写速度估算，不按 AI 生成速度。
+- tasks（阶段九）：核心模块默认显式标注 user-handwritten 并关联本节；T004/T012/T015/T017 已获 2026-09-20 逐任务 AI 实现授权；其余排期按用户手写速度估算，不按 AI 生成速度。
 - 里程碑节点清单在 plan 阶段产出（LG-001）。
 
 ---
