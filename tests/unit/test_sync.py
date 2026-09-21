@@ -1,196 +1,253 @@
-"""Unit tests for the T019 sync orchestration."""
+"""T019 unit tests for src/sync.py (collect → distill → ingest + lock + retention).
 
-import argparse
+All external effects are faked: gather/distill/upsert are monkeypatched,
+so these tests verify orchestration, locking, and retention only.
+"""
+
+import json
 from datetime import date, datetime
 
 import pytest
 
-from src import sync
+from src import collect, config, distill, ingest, sync
 from src.collect import DayRaw
 from src.ingest import Entry, Report
-
+from src.plugins import RawMaterial
 
 DAY = date(2026, 9, 20)
 
 
 @pytest.fixture
-def sync_paths(tmp_path, monkeypatch):
-    data_dir = tmp_path / "data"
-    raw_dir = data_dir / "raw"
-    lock_path = data_dir / ".sync.lock"
-    raw_dir.mkdir(parents=True)
-    monkeypatch.setattr(sync.config, "DATA_DIR", data_dir)
-    monkeypatch.setattr(sync.config, "RAW_DIR", raw_dir)
-    monkeypatch.setattr(sync.config, "SYNC_LOCK_PATH", lock_path)
-    monkeypatch.setattr(
-        sync.config,
-        "load_schema",
-        lambda: {"raw_retention_days": 90},
-    )
-    return raw_dir, lock_path
+def pipeline(tmp_data_dir, monkeypatch):
+    """Fake the three pipeline stages and record the call order."""
+    calls = []
+
+    def fake_gather(day, scope=None):
+        calls.append(("gather", day, scope))
+        return DayRaw(
+            day=day,
+            collected_at=datetime(2026, 9, 20, 12, 0, 0),
+            materials=[RawMaterial(
+                source="claude_code", ref="s1",
+                ts=datetime(2026, 9, 20, 10, 0, 0),
+                kind="message", text="hello")],
+        )
+
+    def fake_distill(day_raw):
+        calls.append(("distill", day_raw.day))
+        return [make_entry(day_raw.day)]
+
+    def fake_upsert(entries):
+        calls.append(("upsert", len(entries)))
+        return Report(upserted=len(entries))
+
+    monkeypatch.setattr(sync.collect, "gather", fake_gather)
+    monkeypatch.setattr(sync.distill, "distill", fake_distill)
+    monkeypatch.setattr(sync.ingest, "upsert", fake_upsert)
+    return calls
 
 
-def make_entry() -> Entry:
+def make_entry(day: date) -> Entry:
     return Entry(
-        text="Sync pipeline entry",
-        date=DAY.isoformat(),
+        text="distilled lesson",
+        date=day.isoformat(),
         type="progress",
-        tags=["sync", "progress"],
-        source="manual",
+        tags=["t"],
+        source="claude_code",
         project=None,
-        created_at=datetime(2026, 9, 20, 14, 0, 0),
-        source_refs=["inbox.md"],
-        distill_version="direct+rubric@test",
+        created_at=datetime(2026, 9, 20, 12, 0, 0),
+        source_refs=["s1"],
+        distill_version="test+rubric@abcd1234",
     )
 
 
-def test_run_chains_pipeline_and_releases_lock(sync_paths, monkeypatch):
-    _, lock_path = sync_paths
-    day_raw = DayRaw(
-        day=DAY,
-        collected_at=datetime(2026, 9, 20, 13, 0, 0),
-        materials=[],
-    )
-    entry = make_entry()
-    calls = []
-
-    monkeypatch.setattr(
-        sync.collect,
-        "gather",
-        lambda day: calls.append(("gather", day)) or day_raw,
-    )
-    monkeypatch.setattr(
-        sync.distill,
-        "distill",
-        lambda raw: calls.append(("distill", raw)) or [entry],
-    )
-    monkeypatch.setattr(
-        sync.ingest,
-        "upsert",
-        lambda entries: calls.append(("upsert", entries))
-        or Report(upserted=len(entries)),
-    )
-    monkeypatch.setattr(
-        sync,
-        "cleanup_raw",
-        lambda day, retention: calls.append(("cleanup", day, retention)) or 2,
-    )
-
-    report = sync.run(DAY)
-
-    assert report == sync.SyncReport(
-        day=DAY,
-        materials=0,
-        entries=1,
-        upserted=1,
-        cleaned=2,
-    )
-    assert calls == [
-        ("gather", DAY),
-        ("distill", day_raw),
-        ("upsert", [entry]),
-        ("cleanup", DAY, 90),
-    ]
-    assert not lock_path.exists()
+# --- pipeline orchestration ---
 
 
-def test_existing_lock_blocks_run_and_is_preserved(sync_paths, monkeypatch):
-    _, lock_path = sync_paths
-    lock_path.write_text("pid=123\n", encoding="utf-8")
-    calls = []
-    monkeypatch.setattr(
-        sync.collect,
-        "gather",
-        lambda day: calls.append(day) or DayRaw(DAY, datetime.now()),
-    )
+def test_run_chains_gather_distill_ingest_in_order(pipeline):
+    summary = sync.run(DAY)
 
-    with pytest.raises(sync.SyncLockError, match="already running"):
+    assert [name for name, *_ in pipeline] == ["gather", "distill", "upsert"]
+    assert pipeline[0][1] == DAY
+    assert summary == {
+        "date": "2026-09-20",
+        "materials": 1,
+        "entries": 1,
+        "upserted": 1,
+        "raw_removed": 0,
+    }
+
+
+def test_run_defaults_to_today(pipeline):
+    from src import config as cfg
+
+    sync.run(None)
+    today = datetime.now(tz=cfg.TZ).date()
+    assert pipeline[0][1] == today
+
+
+# --- file lock (F2) ---
+
+
+def test_lock_is_held_while_pipeline_runs(pipeline):
+    """Inside gather the lock must already block a second acquisition."""
+    observed = {}
+
+    def probing_gather(day, scope=None):
+        try:
+            with sync._lock(config.SYNC_LOCK_PATH):
+                observed["second"] = "acquired"
+        except sync.SyncInProgressError:
+            observed["second"] = "rejected"
+        return DayRaw(day=day, collected_at=datetime.now())
+
+    pipeline and None  # keep fixture ordering side effects
+    sync.collect.gather = probing_gather
+    sync.run(DAY)
+    assert observed["second"] == "rejected"
+
+
+def test_second_sync_rejected_immediately(pipeline):
+    with sync._lock(config.SYNC_LOCK_PATH):
+        with pytest.raises(sync.SyncInProgressError):
+            sync.run(DAY)
+    # after release the sync can run again
+    assert sync.run(DAY)["upserted"] == 1
+
+
+def test_lock_released_after_failed_pipeline(pipeline, monkeypatch):
+    def boom(entries):
+        raise RuntimeError("qdrant down")
+
+    monkeypatch.setattr(sync.ingest, "upsert", boom)
+    with pytest.raises(RuntimeError):
         sync.run(DAY)
-
-    assert calls == []
-    assert lock_path.read_text(encoding="utf-8") == "pid=123\n"
-
-
-def test_pipeline_failure_releases_lock(sync_paths, monkeypatch):
-    _, lock_path = sync_paths
-
-    def fail_gather(day):
-        raise RuntimeError("collect failed")
-
-    monkeypatch.setattr(sync.collect, "gather", fail_gather)
-
-    with pytest.raises(RuntimeError, match="collect failed"):
-        sync.run(DAY)
-
-    assert not lock_path.exists()
+    # lock must not stay behind after a crash inside the pipeline
+    with sync._lock(config.SYNC_LOCK_PATH):
+        pass
 
 
-def test_cleanup_raw_removes_only_snapshots_before_cutoff(sync_paths):
-    raw_dir, _ = sync_paths
-    old = raw_dir / "2026-09-16.json"
-    boundary = raw_dir / "2026-09-17.json"
-    current = raw_dir / "2026-09-20.json"
-    malformed = raw_dir / "not-a-snapshot.json"
-    invalid_date = raw_dir / "2026-99-99.json"
-    for path in (old, boundary, current, malformed, invalid_date):
-        path.write_text("{}", encoding="utf-8")
-
-    cleaned = sync.cleanup_raw(DAY, 3)
-
-    assert cleaned == 1
-    assert not old.exists()
-    assert boundary.exists()
-    assert current.exists()
-    assert malformed.exists()
-    assert invalid_date.exists()
+# --- retention (FR-022) ---
 
 
-def test_cleanup_raw_with_zero_days_keeps_target_day(sync_paths):
-    raw_dir, _ = sync_paths
-    previous = raw_dir / "2026-09-19.json"
-    current = raw_dir / "2026-09-20.json"
-    previous.write_text("{}", encoding="utf-8")
-    current.write_text("{}", encoding="utf-8")
-
-    cleaned = sync.cleanup_raw(DAY, 0)
-
-    assert cleaned == 1
-    assert not previous.exists()
-    assert current.exists()
+@pytest.fixture
+def raw_dir(tmp_data_dir):
+    raw = config.RAW_DIR
+    raw.mkdir(parents=True, exist_ok=True)
+    return raw
 
 
-def test_cleanup_raw_with_null_retention_is_permanent(sync_paths):
-    raw_dir, _ = sync_paths
-    old = raw_dir / "2020-01-01.json"
-    old.write_text("{}", encoding="utf-8")
-
-    assert sync.cleanup_raw(DAY, None) == 0
-    assert old.exists()
+def write_snapshot(raw_dir, name: str) -> None:
+    (raw_dir / name).write_text("{}", encoding="utf-8")
 
 
-def test_parse_day_requires_iso_date():
-    assert sync.parse_day("2026-09-17") == date(2026, 9, 17)
-    with pytest.raises(argparse.ArgumentTypeError):
-        sync.parse_day("2026/09/17")
+def test_cleanup_removes_only_expired_snapshots(raw_dir, monkeypatch):
+    monkeypatch.setattr(sync.config, "load_schema",
+                        lambda: {"raw_retention_days": 90})
+    write_snapshot(raw_dir, "2026-09-20.json")   # today
+    write_snapshot(raw_dir, "2026-07-01.json")   # 81 days old: keep
+    write_snapshot(raw_dir, "2026-05-01.json")   # 142 days old: delete
+    write_snapshot(raw_dir, "not-a-date.json")   # never touched
+
+    removed = sync.cleanup_raw(now=date(2026, 9, 20))
+
+    assert removed == ["2026-05-01.json"]
+    assert (raw_dir / "2026-09-20.json").exists()
+    assert (raw_dir / "2026-07-01.json").exists()
+    assert (raw_dir / "not-a-date.json").exists()
 
 
-def test_main_runs_requested_day(monkeypatch, capsys):
-    calls = []
-    report = sync.SyncReport(
-        day=date(2026, 9, 17),
-        materials=2,
-        entries=1,
-        upserted=1,
-        cleaned=0,
-    )
-    monkeypatch.setattr(
-        sync,
-        "run",
-        lambda day: calls.append(day) or report,
-    )
+def test_cleanup_zero_retention_removes_all_past_days(raw_dir, monkeypatch):
+    monkeypatch.setattr(sync.config, "load_schema",
+                        lambda: {"raw_retention_days": 0})
+    write_snapshot(raw_dir, "2026-09-20.json")
+    write_snapshot(raw_dir, "2026-09-19.json")
 
-    exit_code = sync.main(["2026-09-17"])
+    removed = sync.cleanup_raw(now=date(2026, 9, 20))
 
-    assert exit_code == 0
-    assert calls == [date(2026, 9, 17)]
-    assert "2026-09-17" in capsys.readouterr().out
+    assert removed == ["2026-09-19.json"]
+    assert (raw_dir / "2026-09-20.json").exists()
+
+
+def test_cleanup_none_retention_keeps_everything(raw_dir, monkeypatch):
+    monkeypatch.setattr(sync.config, "load_schema",
+                        lambda: {"raw_retention_days": None})
+    write_snapshot(raw_dir, "2020-01-01.json")
+
+    assert sync.cleanup_raw(now=date(2026, 9, 20)) == []
+    assert (raw_dir / "2020-01-01.json").exists()
+
+
+def test_run_invokes_retention_cleanup(pipeline, raw_dir, monkeypatch):
+    monkeypatch.setattr(sync.config, "load_schema",
+                        lambda: {"raw_retention_days": 0})
+    write_snapshot(raw_dir, "2026-09-19.json")
+
+    summary = sync.run(DAY)
+
+    assert summary["raw_removed"] == 1
+    assert not (raw_dir / "2026-09-19.json").exists()
+
+
+# --- scope.json (FR-005, feeding T035) ---
+
+
+def test_run_passes_scope_json_to_gather(pipeline, tmp_data_dir, monkeypatch):
+    scope = {"tools": {"claude_code": False}, "projects": {}}
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_data_dir / "config")
+    (tmp_data_dir / "config").mkdir()
+    (tmp_data_dir / "config" / "scope.json").write_text(
+        json.dumps(scope), encoding="utf-8")
+
+    sync.run(DAY)
+
+    assert pipeline[0][2] == scope
+
+
+def test_run_ignores_broken_scope_json(pipeline, tmp_data_dir, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_data_dir / "config")
+    (tmp_data_dir / "config").mkdir()
+    (tmp_data_dir / "config" / "scope.json").write_text("{oops", encoding="utf-8")
+
+    sync.run(DAY)
+
+    assert pipeline[0][2] is None
+
+
+def test_run_without_scope_json_passes_none(pipeline):
+    sync.run(DAY)
+    assert pipeline[0][2] is None
+
+
+# --- CLI entry (FR-025) ---
+
+
+def test_main_parses_d_equals_date(pipeline, monkeypatch):
+    code = sync.main(["sync", "D=2026-09-18"])
+    assert code == 0
+    assert pipeline[0][1] == date(2026, 9, 18)
+
+
+def test_main_parses_plain_date(pipeline):
+    assert sync.main(["sync", "2026-09-18"]) == 0
+    assert pipeline[0][1] == date(2026, 9, 18)
+
+
+def test_main_defaults_to_today(pipeline):
+    assert sync.main(["sync"]) == 0
+    assert pipeline[0][1] == datetime.now(tz=config.TZ).date()
+
+
+def test_main_exits_nonzero_on_pipeline_failure(pipeline, monkeypatch):
+    monkeypatch.setattr(sync.ingest, "upsert",
+                        lambda entries: (_ for _ in ()).throw(RuntimeError("x")))
+    assert sync.main(["sync"]) == 1
+
+
+def test_main_exits_nonzero_when_sync_already_running(pipeline):
+    with sync._lock(config.SYNC_LOCK_PATH):
+        assert sync.main(["sync"]) != 0
+
+
+def test_main_rejects_invalid_date(pipeline):
+    assert sync.main(["sync", "D=not-a-date"]) == 1

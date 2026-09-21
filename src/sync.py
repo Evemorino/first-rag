@@ -1,161 +1,164 @@
-"""Daily sync orchestration: collect -> distill -> ingest -> retention.
+"""Daily sync orchestration: collect → distill → ingest (T019).
 
-The lock is acquired before any work starts. A second process fails
-immediately instead of competing with the first one (FR-022, F2 fix).
+设计要点：
+1. 整个运行期间持有 data/.sync.lock 文件锁，cron 与 API 壳并发触发时
+   后到者立即报错退出（F2 修复），避免同日双写。
+2. 运行结束清理到期 raw 快照（FR-022）；库内条目永不因保留期被删。
+3. CLI：python -m src.sync [D=YYYY-MM-DD]（FR-025），默认今天；
+   任何阶段失败以非零码退出，可安全重跑（宪法 IV）。
 """
 
 from __future__ import annotations
 
-import argparse
+import json
 import logging
-import os
 import re
 import sys
-from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import IO, Iterator
 
 from src import collect, config, distill, ingest
 
 logger = logging.getLogger(__name__)
 
-_RAW_SNAPSHOT_NAME = re.compile(r"^(?P<day>\d{4}-\d{2}-\d{2})\.json$")
+_DATE_ARG = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-class SyncLockError(RuntimeError):
-    """Raised when another sync process already owns the lock."""
+class SyncInProgressError(RuntimeError):
+    """Another sync already holds data/.sync.lock (F2)."""
 
 
-@dataclass(frozen=True)
-class SyncReport:
-    """Summary returned by one sync run."""
+def _try_lock(fd: int) -> None:
+    """Cross-platform non-blocking exclusive lock on one open file."""
+    try:
+        import fcntl
+    except ImportError:  # Windows
+        import msvcrt
+        import os
 
-    day: date
-    materials: int
-    entries: int
-    upserted: int
-    cleaned: int
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    else:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
 @contextmanager
-def _sync_lock() -> Iterator[None]:
-    """Hold an exclusive process lock for the full sync pipeline."""
-    path = config.SYNC_LOCK_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError:
-        raise SyncLockError(
-            f"sync already running (lock: {path}); "
-            "remove the lock if the previous process is no longer running"
-        ) from None
+def _lock(path: Path) -> Iterator[None]:
+    """Hold an exclusive lock on `path`; closing the handle releases it.
 
+    The lock file itself is never deleted, so there is no stale-lock
+    window: a crashed process releases its handle at exit (OS-level).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle: IO = path.open("a+")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(f"pid={os.getpid()}\n")
-            handle.write(f"started_at={datetime.now(tz=config.TZ).isoformat()}\n")
+        _try_lock(handle.fileno())
+    except OSError as exc:
+        handle.close()
+        raise SyncInProgressError(
+            f"another sync is already running (lock: {path})"
+        ) from exc
+    try:
         yield
     finally:
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
+        handle.close()
 
 
-def cleanup_raw(day: date, retention_days: int | None) -> int:
-    """Delete raw snapshots older than the configured retention window."""
+def cleanup_raw(
+    now: date | None = None,
+    *,
+    retention_days: int | None = None,
+    raw_dir: Path | None = None,
+) -> list[str]:
+    """Delete raw snapshots older than the retention window (FR-022).
+
+    raw_retention_days = null means "keep forever" (PRD FR-022).
+    Qdrant entries are never touched here (AC-008).
+    """
     if retention_days is None:
-        return 0
+        retention_days = config.load_schema().get("raw_retention_days")
+    if retention_days is None:
+        return []
+    directory = raw_dir or config.RAW_DIR
+    if not directory.is_dir():
+        return []
 
-    cutoff = day - timedelta(days=retention_days)
-    cleaned = 0
-    for path in sorted(config.RAW_DIR.glob("*.json")):
-        match = _RAW_SNAPSHOT_NAME.fullmatch(path.name)
-        if match is None or not path.is_file():
-            continue
+    now = now or datetime.now(tz=config.TZ).date()
+    cutoff = now - timedelta(days=retention_days)
+    removed: list[str] = []
+    for path in sorted(directory.glob("????-??-??.json")):
         try:
-            snapshot_day = date.fromisoformat(match.group("day"))
+            snapshot_day = date.fromisoformat(path.stem)
         except ValueError:
-            logger.warning("sync: ignoring malformed raw snapshot name %s", path)
-            continue
-        if snapshot_day >= cutoff:
-            continue
-        try:
+            continue  # not a day snapshot; leave it alone
+        if snapshot_day < cutoff:
             path.unlink()
-        except FileNotFoundError:
-            continue
-        cleaned += 1
-        logger.info("sync: removed expired raw snapshot %s", path)
-    return cleaned
+            removed.append(path.name)
+            logger.info("sync: removed expired raw snapshot %s", path.name)
+    return removed
 
 
-def run(day: date | None = None) -> SyncReport:
-    """Run the full pipeline for one day under the sync lock."""
-    target_day = day or datetime.now(tz=config.TZ).date()
-    with _sync_lock():
-        schema = config.load_schema()
-        day_raw = collect.gather(target_day)
+def _load_scope() -> dict | None:
+    """Read config/scope.json (FR-005). Broken file → None (sync all)."""
+    path = config.CONFIG_DIR / "scope.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("sync: cannot read %s, ignoring scope: %s", path, exc)
+        return None
+
+
+def run(day: date | None = None) -> dict:
+    """One full sync for `day` (default today). Returns a summary dict."""
+    day = day or datetime.now(tz=config.TZ).date()
+    with _lock(config.SYNC_LOCK_PATH):
+        day_raw = collect.gather(day, _load_scope())
         entries = distill.distill(day_raw)
-        result = ingest.upsert(entries)
-        cleaned = cleanup_raw(target_day, schema["raw_retention_days"])
+        report = ingest.upsert(entries)
+        removed = cleanup_raw(now=datetime.now(tz=config.TZ).date())
+    summary = {
+        "date": day.isoformat(),
+        "materials": len(day_raw.materials),
+        "entries": len(entries),
+        "upserted": report.upserted,
+        "raw_removed": len(removed),
+    }
+    logger.info("sync done: %s", summary)
+    return summary
 
-    report = SyncReport(
-        day=target_day,
-        materials=len(day_raw.materials),
-        entries=len(entries),
-        upserted=result.upserted,
-        cleaned=cleaned,
+
+def _parse_day(argv: list[str]) -> date | None:
+    """Accept `D=YYYY-MM-DD` (Makefile form) or a bare date argument."""
+    for arg in argv[1:]:
+        value = arg[2:] if arg.startswith("D=") else arg
+        if _DATE_ARG.match(value):
+            return date.fromisoformat(value)
+        if arg.startswith("D="):
+            raise ValueError(f"invalid date argument: {arg}")
+    return None
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry. 0 on success, non-zero on any failure (spec Edge Cases)."""
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
     )
-    logger.info(
-        "sync: day=%s materials=%d entries=%d upserted=%d cleaned=%d",
-        report.day,
-        report.materials,
-        report.entries,
-        report.upserted,
-        report.cleaned,
-    )
-    return report
-
-
-def parse_day(value: str) -> date:
-    """Parse the CLI date as strict YYYY-MM-DD."""
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) is None:
-        raise argparse.ArgumentTypeError("date must use YYYY-MM-DD")
     try:
-        return date.fromisoformat(value)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("date must use YYYY-MM-DD") from exc
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    """CLI entry point for ``make sync [D=YYYY-MM-DD]`` (FR-025)."""
-    parser = argparse.ArgumentParser(description="Run one daily first-rag sync")
-    parser.add_argument(
-        "day",
-        nargs="?",
-        type=parse_day,
-        help="day to sync in YYYY-MM-DD format (default: today in Asia/Shanghai)",
-    )
-    args = parser.parse_args(argv)
-    target_day = args.day or datetime.now(tz=config.TZ).date()
-
-    try:
-        report = run(target_day)
-    except SyncLockError as exc:
-        print(f"sync: {exc}", file=sys.stderr)
+        day = _parse_day(sys.argv if argv is None else argv)
+        summary = run(day)
+    except SyncInProgressError as exc:
+        logger.error("%s", exc)
         return 2
     except Exception:
-        logger.exception("sync: failed for %s", target_day)
+        logger.exception("sync failed")
         return 1
-
-    print(
-        f"sync {report.day}: materials={report.materials} "
-        f"entries={report.entries} upserted={report.upserted} "
-        f"cleaned={report.cleaned}"
-    )
+    print(json.dumps(summary, ensure_ascii=False))
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())
