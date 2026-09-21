@@ -14,7 +14,7 @@ embed-test:
 # --- Daily pipeline (needs up + embed-test done once) ---
 # Same-day idempotent: safe to re-run any number of times (FR-014).
 sync:
-	python -m src.sync $(if $(D),D=$(D))
+	python -m src.sync $(D)
 
 # --- Retrieval ---
 #   e.g. make ask Q="最近学了什么" --type error --since 7d --no-expand

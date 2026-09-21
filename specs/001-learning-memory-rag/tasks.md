@@ -2,15 +2,15 @@
 
 **Input**: plan.md / spec.md / data-model.md / contracts/plugin-contract.md
 **组织方式**: 按 plan 纵切里程碑分 Phase（宪法 VII / LG-002），任务标签 `[USx]` 映射 spec 用户故事
-**★ 标注**: 用户手写任务（宪法 VII），AI 仅 review 答疑；其余可 AI 生成、用户抽查
+**★ 标注**: 默认用户手写任务（宪法 VII v2.0.0），AI 仅 review 答疑；T004/T012/T015/T017 已获用户 2026-09-20 逐任务明确授权由 AI 实现，其余可 AI 生成、用户抽查
 
 ## Phase 1: Setup（M0 脚手架）
 
 - [x] T001 [P][US1] 项目脚手架：docker-compose.yml（仅 qdrant，卷 `./data/qdrant/`）、`.env.example`、`.gitignore`（**初版必含 `data/` `.env` `notes/`**，PRD §6 规则 2）、`pyproject.toml`、`Makefile` 骨架。验证：`make up` 后 Qdrant dashboard 可访问（AC-001 前半）——*代码就位，`make up` 待与 T005 一并真跑*
 - [x] T002 [P][US1] `src/config.py`：环境变量加载（.env）、路径常量、时区 Asia/Shanghai。验证：单测读 fixture .env（FR-015、§6）——*单测过（.env fixture 读取 + 缺失报错）*
 - [x] T003 [P][US1] `config/schema.json` 初版 + 加载校验：types / distill / retrieval / trae_type_map / raw_retention_days，结构按 data-model.md。验证：改坏结构时报错明确（FR-007/016/019/020）——*含 5 个负向单测（缺字段/空 types/坏 mode 等）*
-- [ ] T004 ★[US1] `src/ark_client.py`：**用户手写**——`embed(texts)` / `chat(messages, json_mode)`，openai SDK 指向 Ark base_url（FR-011 密钥走环境；AI 仅 review）
-- [x] T005 [P][US1] `make embed-test`：真调验证候选嵌入模型 ID → 确认维度 → 写回 `.env` → 动态维度建集合脚本（AC-001；PRD §9 假设验证点）——*`scripts/embed_test.py` 就位（含 F1 维度冲突检测）；真跑依赖 T004 用户手写*
+- [x] T004 ★[US1] `src/ark_client.py`：`embed(texts)` / `chat(messages, json_mode)`，openai SDK 指向 Ark base_url（FR-011 密钥走环境）——*用户于 2026-09-20 明确授权 AI 实现（宪法 v2.0.0）；5 个 fake-client 单测覆盖环境配置、空输入、批量顺序、数量校验、JSON mode*
+- [x] T005 [P][US1] `make embed-test`：真调验证候选嵌入模型 ID → 确认维度 → 写回 `.env` → 动态维度建集合脚本（AC-001；PRD §9 假设验证点）——*`scripts/embed_test.py` 就位（含 F1 维度冲突检测）；T004 已完成，真跑依赖 `.env` 与 Qdrant*
 - [x] T006 [P][US1] `tests/` 骨架 + pytest 配置（unit/integration 分层，fixture 全用系统 tmp——宪法 V）——*conftest tmp_data_dir + test_config.py 7 用例*
 
 **Checkpoint**: `make up` + `make embed-test` 全绿，基础设施就绪。
@@ -29,14 +29,14 @@
 
 - [x] T010 [US1] `src/plugins/claude_code/`：按 research.md 格式解析 `~/.claude/projects/**.jsonl`，提取消息/工具报错/struggle 轮次 meta（FR-002；源目录只读——宪法 V）——*6 用例全过（含 struggle 连续计数、跨日过滤）*
 - [x] T011 [US1] `src/collect.py`：汇聚各插件 discover/parse + git（`config/repos.txt`，FR-003）+ 快记 → `data/raw/YYYY-MM-DD.json`（含蒸馏运行元信息，FR-006）；空日写空快照（§8）。验证：repos.txt 缺失/路径失效 → no-op + 日志（G3 补）——*7 用例全过*
-- [ ] T012 ★[US1] `src/ids.py`：**用户手写**——uuid5(source|date|content_hash)，含 content_hash 定义（FR-014；NFR-003）
-- [ ] T013 [US1] `src/ingest.py` 直插路径：embed → upsert（payload 按 data-model.md 全字段）（依赖 T004/T012）
-- [ ] T014 [US1] integration 测试：同日重跑幂等——points 数不变（AC-003；FR-014）
-- [ ] T015 ★[US1] `src/distill_prompt.py`：**用户手写**——rubric → prompt 运行时拼装（类型枚举来自 config；include/exclude 信号、keep/drop 示例注入）（FR-007）
-- [ ] T016 [US1] `src/distill.py` 编排：脱敏正则（FR-011）→ LLM → JSON 解析 → 未知类型重试一次后丢弃（FR-012）→ 熔断（FR-010）→ pre-summarized 快记/trae 直并入（FR-013）
-- [ ] T017 ★[US1] `src/similarity.py` 新颖度去重：**用户手写**——候选嵌入 → 检索已有 → 超阈值跳过/并入（FR-009）
-- [ ] T018 [US1] 单测：脱敏（伪造密钥 fixture，AC-012）、未知类型（AC-013）、熔断（临时上限 3，AC-014）
-- [ ] T019 [US1] `src/sync.py`：串联 collect→distill→ingest + `data/.sync.lock` 文件锁 + 到期 raw 清理（FR-022；F2 修复）+ `make sync [D=]` 入口（FR-025）
+- [x] T012 ★[US1] `src/ids.py`：uuid5(source|date|content_hash)，含 content_hash 定义（FR-014；NFR-003）——*用户于 2026-09-20 明确授权 AI 实现（宪法 v2.0.0）；5 个单测覆盖 sha256 前 16 位、UUIDv5 公式、确定性、身份变化、空输入拒绝*
+- [x] T013 [US1] `src/ingest.py` 直插路径：embed → upsert（payload 按 data-model.md 全字段）（依赖 T004/T012）——*5 个 fake-client/fake-embed 单测覆盖 Entry 全字段、空输入 no-op、批量 embedding 顺序、确定性 ID、完整 payload、同批去重；真实 Qdrant 集成待 T014*
+- [x] T014 [US1] integration 测试：同日重跑幂等——points 数不变（AC-003；FR-014）——*真实 Qdrant 测试通过：fake embedding 下同日重跑保持 2 个 points，ID 命中 UUIDv5 期望值；测试客户端以 trust_env=False 隔离宿主 SOCKS 代理*
+- [x] T015 ★[US1] `src/distill_prompt.py`：**用户手写（本次授权 AI 实现）**——rubric → prompt 运行时拼装（类型枚举来自 config；include/exclude 信号、keep/drop 示例注入）（FR-007）——*用户于 2026-09-20 明确授权 AI 实现；6 个单测覆盖配置 rubric/type 注入、严格 JSON 契约、untrusted data 边界、素材溯源、system+user 顺序、空素材；好/坏例子见 example/*
+- [x] T016 [US1] `src/distill.py` 编排：脱敏正则（FR-011）→ LLM → JSON 解析 → 未知类型重试一次后丢弃（FR-012）→ 熔断（FR-010）→ pre-summarized 快记/trae 直并入（FR-013）——*10 个核心单测覆盖直接路径、脱敏+快照、合法 JSON、非法 JSON 重试、未知类型重试/丢弃、熔断、空素材；好/坏例子见 example/*
+- [x] T017 ★[US1] `src/similarity.py` 新颖度去重：**用户手写（本次授权 AI 实现）**——候选嵌入 → 检索已有 → 超阈值跳过/并入（FR-009）——*12 个 similarity 单测 + 2 个 ingest 接线测试覆盖 collection 缺失、阈值边界、同 ID 重跑、跳过语义重复；好/坏例子见 example/*
+- [x] T018 [US1] 单测：脱敏（伪造密钥 fixture，AC-012）、未知类型（AC-013）、熔断（临时上限 3，AC-014）——*3 组验收测试通过：手动快记密钥不出现在条目/快照/日志，未知类型重试后丢弃且合法条目保留，临时上限 3 时截断并记录熔断日志*
+- [x] T019 [US1] `src/sync.py`：串联 collect→distill→ingest + `data/.sync.lock` 文件锁 + 到期 raw 清理（FR-022；F2 修复）+ `make sync [D=]` 入口（FR-025）——*8 个单测覆盖编排顺序、锁冲突与失败释放、retention 边界/0 天/null/坏文件名、ISO 日期解析与 CLI；`make -n sync D=2026-09-17` 正确透传日期*
 - [ ] T021 [P][US1] `src/plugins/codex/`：按 research.md 解析 rollout-*.jsonl（FR-002）
 - [ ] T022 [P][US1] `src/plugins/kimi_code/`：解析 wd_*/session_*/wire.jsonl（FR-002）
 - [ ] T023 [P][US1] `src/plugins/trae/`：pre-summarized 轻转换 + `trae_type_map` 映射，未匹配默认 reflection（FR-002/013）
@@ -87,7 +87,7 @@
 
 - **Phase 1 → 2 → 3 严格串行**（基础设施 → 契约 → 主链路）；T021/T022/T023 三个插件彼此 [P] 可并行
 - **Phase 4 依赖 T013**（ingest 先在）；Phase 5/6 依赖 T019（sync 先在）
-- ★ 任务（T004/T012/T015/T017/T027/T037）**排期按用户手写速度**，不受 AI 生成速度绑架（PRD §12.3）；每个 ★ 任务前用户先写预期行为（LG-003，记入 notes/）
+- ★ 任务（T015/T017/T027/T037）**排期按用户手写速度**，不受 AI 生成速度绑架（PRD §12.3）；每个 ★ 任务前用户先写预期行为（LG-003，记入 notes/）。T004/T012/T015/T017 为已获用户逐任务明确授权的例外，不得扩大到其他核心模块
 - 同 phase 内 [P] 任务可并行；跨 phase 禁止（纵切完整性优先）
 
 ## Notes
