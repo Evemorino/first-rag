@@ -1,7 +1,17 @@
 """好例子：一个薄、可测试的 OpenAI-compatible API Adapter。
 
-这个文件只用于学习对比，不是 T004 的正式实现。
-正式实现仍应由你自己写在 src/ark_client.py 中。
+来源依据：
+1. openai-python 开源仓库：
+   https://github.com/openai/openai-python/blob/main/src/openai/resources/embeddings.py
+   其中 Embeddings.create 的 input 参数支持 Sequence[str]，也就是一次传入多条文本。
+2. openai-python 的返回类型：
+   https://github.com/openai/openai-python/blob/main/src/openai/types/embedding.py
+   其中 Embedding 包含 embedding: List[float] 和 index: int。
+3. OpenAI 官方文档：
+   https://developers.openai.com/api/docs/guides/embeddings
+   官方说明 embeddings 可以批量传入文本。
+
+这个文件是学习对照，不是 T004 的正式实现。
 """
 
 from openai import OpenAI
@@ -13,10 +23,11 @@ from openai import OpenAI
 def build_client(api_key: str, base_url: str) -> OpenAI:
     """根据调用方传入的配置创建 OpenAI-compatible client。
 
-    好处：
-    1. 密钥不进入源码；
-    2. 不依赖模块级全局状态；
-    3. 测试时可以只测试这个函数的参数传递，不需要真实网络。
+    好在哪里：
+    1. 密钥不进入源码，符合安全边界；
+    2. base_url 不硬编码，可以指向 Ark 或其他兼容服务；
+    3. 不依赖模块级全局状态，测试时可以直接传假配置；
+    4. 函数只做一件事：创建 client。
     """
     return OpenAI(
         api_key=api_key,
@@ -30,24 +41,23 @@ def embed_texts(
     texts: list[str],
 ) -> list[list[float]]:
     """批量生成 embedding，并保持输出顺序与输入顺序一致。"""
-    # 空输入没有业务意义，应该在发网络请求前就失败。
+    # 好在哪里：空输入在发网络请求前失败，避免无意义的 API 调用。
     if not texts:
         raise ValueError("texts must not be empty")
 
-    # OpenAI SDK 支持一次传入多个字符串。
-    # 这里使用一次批量请求，而不是对每条文本循环调用一次 API。
+    # 好在哪里：官方 SDK 支持批量 input。
+    # 这里一次请求处理全部文本，而不是循环调用 N 次网络接口。
     response = client.embeddings.create(
         model=model,
         input=list(texts),
     )
 
-    # 返回结果中的每个 item 都有 index 字段。
-    # 先按 index 排序，再提取向量，可以确保结果顺序和输入顺序一致。
+    # 好在哪里：返回项自带 index 字段。
+    # 先按 index 排序，再提取向量，确保第 i 个向量对应第 i 条输入文本。
     ordered = sorted(response.data, key=lambda item: item.index)
     vectors = [item.embedding for item in ordered]
 
-    # 如果 API 返回数量和输入数量不一致，立即失败。
-    # 这种数据不能继续入库，否则后续很难排查文本和向量是否错位。
+    # 好在哪里：数量不一致时立即失败，避免把错误数据继续传给 Qdrant。
     if len(vectors) != len(texts):
         raise RuntimeError(
             f"embedding response count mismatch: expected {len(texts)}, "
@@ -67,10 +77,9 @@ def chat_text(
     """调用 chat completion 接口，并返回助手文本内容。"""
     request_options: dict[str, object] = {}
 
+    # 好在哪里：使用官方 SDK 暴露的 response_format 参数。
+    # 这个 adapter 只负责请求 JSON 输出，不负责解析 JSON。
     if json_mode:
-        # response_format 是官方 SDK 暴露的参数。
-        # 这个模块只负责请求 JSON 输出，不负责解析 JSON。
-        # JSON 解析属于后续 distill 模块的职责。
         request_options["response_format"] = {"type": "json_object"}
 
     response = client.chat.completions.create(
@@ -79,6 +88,5 @@ def chat_text(
         **request_options,
     )
 
-    # 只返回调用方需要的文本，不返回完整 SDK response 对象。
-    # 这样调用方不需要了解 OpenAI SDK 的内部结构。
+    # 好在哪里：只返回调用方需要的文本，不暴露 SDK 的完整响应结构。
     return response.choices[0].message.content or ""

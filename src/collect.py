@@ -77,7 +77,7 @@ def gather(day: date, scope: dict | None = None) -> DayRaw:
     day_raw.materials.extend(_note_materials(day))
 
     _cap(day_raw, schema["distill"]["max_raw_chars"])
-    _save(day_raw)
+    save_snapshot(day_raw)
     return day_raw
 
 
@@ -187,7 +187,8 @@ def snapshot_path(day: date) -> Path:
     return config.RAW_DIR / f"{day.isoformat()}.json"
 
 
-def _save(day_raw: DayRaw) -> None:
+def save_snapshot(day_raw: DayRaw) -> None:
+    """Persist the current DayRaw snapshot to data/raw/YYYY-MM-DD.json."""
     path = snapshot_path(day_raw.day)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(

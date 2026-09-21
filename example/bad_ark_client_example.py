@@ -1,16 +1,20 @@
 """坏例子：把常见错误集中在一个不可执行的代码片段中。
 
-这个文件不会真的执行坏例子。
-坏代码放在 BAD_EXAMPLE 字符串里，因为它包含故意写错的 Python 语法。
+安全反例依据来自 OWASP 开源项目：
+https://github.com/OWASP/CheatSheetSeries/blob/master/cheatsheets/Secrets_Management_Cheat_Sheet.md
+
+OWASP 明确指出，API key 等秘密常被以明文硬编码在源码中，
+这是需要治理的泄露风险。下面的代码片段是根据本项目用户草稿
+整理的教学反例，不是从其他开源项目复制来的坏代码。
 """
 
 # ===== 坏例子：常见错误 =====
 #
 # 这个例子故意展示下面这些问题：
-# 1. 引入不必要的 LangChain 依赖；
-# 2. 在模块 import 时创建 client；
-# 3. 硬编码模型名；
-# 4. 把密钥写进源码；
+# 1. 硬编码 API key —— OWASP Secrets Management 明确列为安全风险；
+# 2. 引入不必要的 LangChain 依赖；
+# 3. 在模块 import 时创建 client；
+# 4. 硬编码模型名；
 # 5. 使用只支持单条文本的 embed_query；
 # 6. 使用 JavaScript/TypeScript 的 const；
 # 7. 在模块顶层打印测试结果。

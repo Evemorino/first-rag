@@ -1,20 +1,3 @@
-<!--
-================================================================================
-SYNC IMPACT REPORT (temporary scratch material for human review; remove before commit)
-================================================================================
-Version change: 0.0.0 (unratified template) → 1.0.0 (initial ratification)
-Modified principles: N/A (initial version)
-Added:
-  - Core Principles (7 principles, V tagged NON-NEGOTIABLE)
-  - Architecture & Technology Constraints
-  - Development Workflow (process invariants only; procedure details live in prd-workflow skill)
-  - Governance
-Removed sections: N/A
-Templates requiring updates: none — plan-template.md Constitution Check compatible by design.
-Follow-up TODOs: none. All placeholders replaced.
-================================================================================
--->
-
 # first-rag Constitution
 
 ## Core Principles
@@ -80,16 +63,19 @@ MUST NOT 为尚未到来的需求引入技术或组件。任何引入的组件 M
 理由：本项目为单用户本机系统；预支的复杂度没有消费者，
 只有维护成本。
 
-### VII. 学习优先（Learning First）
+### VII. 学习优先与显式授权（Learning First with Explicit Authorization）
 
 本项目同时是学习项目。核心逻辑模块（嵌入客户端、相似度搜索与去重、
-幂等标识、蒸馏提示词）MUST 由用户手写，AI MUST NOT 代写，
-只做 review 与答疑。交付 MUST 按端到端可运行的纵切薄片推进，
-MUST NOT 按模块横切批量产出。脚手架类文件（构建、路由样板、
-配置骨架）可由 AI 生成。
+幂等标识、蒸馏提示词）默认 MUST 由用户手写，AI 仅 review 与答疑。
+当用户在具体任务中明确放弃手写并批准 AI 实现时，AI MAY 代写该任务；
+该授权 MUST 记录在任务或实施记录中，且 MUST 附带测试、验证证据和
+足够解释实现选择的中文学习注释。AI MUST NOT 在未获具体任务授权时
+代写核心逻辑，MUST NOT 借一次授权批量代写其他核心模块。交付 MUST
+按端到端可运行的纵切薄片推进，MUST NOT 按模块横切批量产出。
+脚手架类文件（构建、路由样板、配置骨架）可由 AI 生成。
 
-理由：学习收益最大化是显性需求（PRD §12）；分工边界写在
-宪法里，防止任何未来的流程参与者（包括 AI）越界代写。
+理由：学习收益仍是显性目标，但用户可在时间受限时为单个任务
+显式选择交付效率；授权必须具体、可追溯，防止默认学习边界被稀释。
 
 ## Architecture & Technology Constraints
 
@@ -99,8 +85,8 @@ MUST NOT 按模块横切批量产出。脚手架类文件（构建、路由样�
   "独立演进、独立版本化的多个消费者"这一判据成立之时。
 - 常驻外部服务仅限本地 Docker 中的向量数据库（Qdrant），
   数据卷挂在宿主机 data/ 下；应用本身跑宿主机 .venv，不做守护进程。
-- 时区统一 Asia/Shanghai；内容以中文为主，
-  代码标识符与注释用英文。
+- 时区统一 Asia/Shanghai；内容与解释性注释以中文为主，
+  代码标识符、日志与错误信息用英文。
 - 嵌入与蒸馏使用火山方舟（Ark）OpenAI 兼容接口，
   确切模型 ID 以真实调用验证为准（PRD 假设）。
 
@@ -125,4 +111,4 @@ MUST NOT 按模块横切批量产出。脚手架类文件（构建、路由样�
 - 所有审查环节（plan 阶段 Constitution Check、最终一致性审查）
   MUST 对照本文件逐条检查，而非凭记忆引用。
 
-**Version**: 1.0.0 | **Ratified**: 2026-09-18 | **Last Amended**: 2026-09-18
+**Version**: 2.0.0 | **Ratified**: 2026-09-18 | **Last Amended**: 2026-09-20
