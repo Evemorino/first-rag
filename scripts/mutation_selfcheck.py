@@ -15,6 +15,18 @@
 3. 期望测试变红 —— 抓不住就说明测试是摆设
 4. 无论结果如何都还原源码（备份 + finally，不走 git，避免吃掉未提交改动）
 
+关于"无论结果如何"
+------------------
+``finally`` 挡不住 SIGTERM/SIGINT —— 被 kill 的时候它不执行。本项目真踩过：
+自检跑到一半被超时杀掉，`src/ids.py` 留在 `NAMESPACE_DNS`（被改坏的状态），
+紧接着的全量 pytest 因此红了 1 个，而那个"红"跟测试质量毫无关系，纯粹是
+自检自己污染了源码。所以这里额外做两件事：
+
+* 装 signal handler + ``atexit``，被 kill 时也尽力还原；
+* 开跑前先做预检：每个 canary 的 ``find`` 必须还在原文里。找不到就直接退出，
+  并提示"可能是上次被中断后没还原"—— 让污染在下一次启动时自己暴露出来，
+  而不是安静地变成别人的假信号。
+
 用法
 ----
     uv run python scripts/mutation_selfcheck.py            # 跑全部内置 canary
@@ -29,15 +41,41 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PYTEST_ARGS = ["-x", "-q", "--no-header", "-p", "no:cacheprovider"]
+
+# 正在变异中的文件 → 它的备份。signal handler / atexit 靠它兜底还原。
+_PENDING_RESTORE: dict[Path, Path] = {}
+
+
+def restore_all() -> None:
+    """把还在变异中的文件还原成备份。重复调用是安全的。"""
+    for target, backup in list(_PENDING_RESTORE.items()):
+        if backup.exists():
+            shutil.copy2(backup, target)
+            shutil.rmtree(backup.parent, ignore_errors=True)
+        _PENDING_RESTORE.pop(target, None)
+
+
+def _install_restore_hooks() -> None:
+    def on_signal(signum: int, _frame: object) -> None:
+        name = signal.Signals(signum).name
+        print(f"\n收到 {name}，先把源码还原回去…", file=sys.stderr)
+        restore_all()
+        sys.exit(128 + signum)
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, on_signal)
+    atexit.register(restore_all)
 
 
 @dataclass(frozen=True)
@@ -146,22 +184,43 @@ def run_canary(canary: Canary) -> Result:
         return result
     result.baseline_ok = True
 
-    # --- 2. 变异 + 还原，finally 兜底 ---
+    # --- 2. 变异 + 还原，finally 兜底（外加 signal/atexit 见 restore_all）---
+    original = target.read_text(encoding="utf-8")
     backup = Path(tempfile.mkdtemp(prefix="mutation-selfcheck-")) / target.name
     shutil.copy2(target, backup)
+    _PENDING_RESTORE[target] = backup
     try:
-        original = target.read_text(encoding="utf-8")
         target.write_text(original.replace(canary.find, canary.replace, 1), encoding="utf-8")
 
         mutated = _run_pytest(tests)
         result.caught = mutated.returncode != 0
         result.detail = _tail(mutated.stdout)
     finally:
-        shutil.copy2(backup, target)
-        shutil.rmtree(backup.parent, ignore_errors=True)
+        restore_all()
 
     result.restored = target.read_text(encoding="utf-8") == original
     return result
+
+
+def preflight(canaries: tuple[Canary, ...]) -> list[str]:
+    """开跑前先确认每个 canary 的原文还在。
+
+    找不到只有两种可能：canary 写错了，或者上一次运行被中断、源码留在
+    被改坏的状态。第二种很危险 —— 它会让接下来所有测试都读脏代码。
+    """
+    problems: list[str] = []
+    for canary in canaries:
+        target = REPO_ROOT / canary.file
+        if not target.exists():
+            problems.append(f"找不到源码文件：{canary.file}")
+            continue
+        if canary.find not in target.read_text(encoding="utf-8"):
+            problems.append(
+                f"{canary.file} 里找不到 {canary.find!r}。"
+                f"要么 canary 过时了，要么上次被中断后没还原 —— "
+                f"先用 git diff {canary.file} 确认（看是不是被改成了 {canary.replace!r}）"
+            )
+    return problems
 
 
 def render(result: Result) -> None:
@@ -232,6 +291,15 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         canaries = CANARIES
+
+    problems = preflight(canaries)
+    if problems:
+        print("变异自检：预检没过，先处理完再跑 ——")
+        for problem in problems:
+            print(f"  ✗ {problem}")
+        return 2
+
+    _install_restore_hooks()
 
     print(f"变异自检：{len(canaries)} 个 canary"
           f"（双向：该抓住的必须抓住，不该抓住的必须放过）")

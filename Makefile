@@ -6,6 +6,7 @@ PY = uv run --no-sync python
 
 .PHONY: up down serve sync ask log scope embed-test test redistill
 .PHONY: cov crap crap-observe mutation mutation-selfcheck hooks
+.PHONY: baseline baseline-update
 .PHONY: layers layers-list size size-top
 
 # Infrastructure: the only container is Qdrant (PRD §6, constitution VI)
@@ -89,9 +90,20 @@ mutation-selfcheck:
 
 # 变异测试：把源码改坏，看测试能不能发现。默认只打核心链路（见 pyproject）。
 # 结果看 mutants/ 与 .mutmut-cache；改一行代码后重跑是增量的，很快。
+# 末尾自动核对 README 里的基线数字 —— 分数变了就报错，逼你顺手更新文档。
 mutation: mutation-selfcheck
 	$(PY) -m mutmut run
 	$(PY) -m mutmut results --all true
+	$(PY) scripts/baseline_check.py
+
+# 只核对不重跑：改了 src/ 或 tests/ 之后，想知道 README 里那个分数还准不准。
+# 它还会列出"比上次跑批还新"的文件，提醒你该重跑了。
+baseline:
+	$(PY) scripts/baseline_check.py
+
+# 把 mutants/ 里的真实数字写回 README（只改那三个数字和分数，排版原样保留）
+baseline-update:
+	$(PY) scripts/baseline_check.py --update
 
 # --- 提交门禁 ---
 # 装好之后，每次 git commit 会自动跑：文本/密钥检查 → pytest → CRAP。

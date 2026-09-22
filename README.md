@@ -100,6 +100,12 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   ——变异测试该验证逻辑，不是验证文案。核心的 `similarity.filter_novel` 与
   `ingest.upsert` 只剩 2 个存活，都是等价变异（改了行为不变）。
 
+  这个数字写完就会开始腐烂，所以它不是"记一次就完事"：`make mutation` 跑完
+  时会自动拿 `mutants/` 里的真实结果和上面这句话比对，不一致就报错
+  （`scripts/baseline_check.py`）。只想查不想重跑时用 `make baseline`，它还会
+  列出比上次跑批还新的 `src/`、`tests/` 文件 —— 那才是基线真正开始说谎的时刻
+  （踩过一次：把 `distill.py` 从 417 行拆到 241 行，分数没变，但没人能事先知道）。
+
 两者都依赖 coverage 数据，所以顺序是 `cov → crap / mutation`。
 
 ### 为什么还需要 `mutation-selfcheck`
@@ -127,6 +133,12 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
 —— 并行时多个 pytest 会同时 rmtree 同一个 basetemp、互相破坏，测试莫名变红，
 分数会从 84.4% 虚高到假的 96.9%（露出马脚的地方：macOS 上根本执行不到的
 Windows 分支会被"全部杀死"）。看到不可达分支被全杀，先怀疑环境，别高兴。
+
+**自检自己也会制造假信号**：它要往源码里写东西，被 kill 的时候 `finally`
+不执行，源码就留在改坏的状态（本项目踩过：超时杀掉自检后 `src/ids.py` 留成
+`NAMESPACE_DNS`，紧接着的全量 pytest 因此红了 1 个 —— 那个红跟测试质量毫无关系）。
+所以它装了 signal handler 兜底还原，并在开跑前预检"每个 canary 的原文还在不在"，
+不在就直接退出码 2。检查器也需要被检查，包括检查它自己有没有污染现场。
 
 同理，别的指标也别当真理看：覆盖率 100% 的测试可以一条有意义的断言都没有
 （本项目 `test_ids.py` 早期就是 `pytest.raises(match=...)` 只比对子串）。
