@@ -81,3 +81,6 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [post-commit]
+        # 必须开 verbose：pre-commit 对**成功**的钩子默认不打印它的输出，
+        # 不开的话这个提醒等于装了个看不见的东西（试过，只显示一行 Passed）。
+        verbose: true

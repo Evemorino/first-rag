@@ -50,6 +50,11 @@ make hooks        # = uv run pre-commit install
 - **pytest 挂了会直接停下**（`fail_fast`）—— 否则 CRAP 会拿一份残缺的
   coverage.xml 判门禁，凭空报出一堆不存在的 crappy 函数。CRAP 与孤儿检查
   都吃这份数据，所以必须排在 pytest 之后。
+- **提交之后还有一个提醒，不算门禁**（`scripts/mutation_reminder.py`）：
+  改动若落在变异测试覆盖的文件里，会提示"该重跑 `make mutation` 了"。
+  变异跑一遍半小时，进不了提交门禁，只能靠它 —— 本项目为此漏过两次。
+  它必须设 `verbose: true`：pre-commit 对**成功**的钩子默认不打印输出，
+  不开的话提醒是看不见的（装完第一次提交就发现了：只显示一行 Passed）。
 - **分层与规模只管 `src/`**；`example/` 是示例代码，豁免质量钩子。
 
 改 README 这类非 Python 文件不会触发测试；想临时跳过用 `git commit --no-verify`。
