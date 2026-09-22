@@ -3,6 +3,11 @@
 数据模型契约：
 point_id = uuid5(NAMESPACE_URL, f"{source}|{date}|{content_hash}")
 content_hash = sha256(text) 的前 16 个十六进制字符。
+
+命名空间为什么是 NAMESPACE_URL：它跟 URL/DNS 的语义无关，这里只是拿 uuid5
+把"来源+日期+正文"压成一个稳定 ID，选哪个命名空间都行。但**选定之后就不能
+改** —— 换命名空间等于换掉整个 ID 空间，历史条目会全部对不上。
+scripts/mutation_selfcheck.py 里有一个 canary 专门盯着这件事。
 """
 
 import hashlib
