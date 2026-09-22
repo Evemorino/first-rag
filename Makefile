@@ -7,7 +7,7 @@ PY = uv run --no-sync python
 .PHONY: up down serve sync ask log scope embed-test test redistill
 .PHONY: cov crap crap-observe mutation mutation-selfcheck hooks
 .PHONY: baseline baseline-update orphans orphans-top
-.PHONY: layers layers-list size size-top
+.PHONY: layers layers-list size size-top gate-selftest
 
 # Infrastructure: the only container is Qdrant (PRD §6, constitution VI)
 up:
@@ -113,6 +113,14 @@ baseline:
 # 把 mutants/ 里的真实数字写回 README（只改那三个数字和分数，排版原样保留）
 baseline-update:
 	$(PY) scripts/baseline_check.py --update
+
+# 门禁自检：给 13 个钩子各植入一个已知违规，看它到底红不红；再跑一组
+# "干净仓库"对照，确认该放行的时候它也放行。约 10 秒。
+# 什么时候跑：改了 .pre-commit-config.yaml 或任何一个 scripts/*_check|guard|lint 之后。
+# 想确认这把自检本身还灵：把 scripts/lint_layers.py 的 main 开头加一行 `return 0`，
+# 它必须报"期望红 实际绿"并退出 1 —— 报不出来说明自检瞎了，比门禁瞎了更糟。
+gate-selftest:
+	$(PY) scripts/gate_selftest.py
 
 # --- 提交门禁 ---
 # 装好之后，每次 git commit 会自动跑：文本/密钥检查 → pytest → CRAP。

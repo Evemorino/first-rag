@@ -26,9 +26,12 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-SOURCE_ROOT = REPO_ROOT / "src"
-DEFAULT_XML = REPO_ROOT / "coverage.xml"
+# 相对路径，故意的：门禁自检（scripts/gate_selftest.py）会在一个临时仓库里
+# 造一份假的 src/ 和 coverage.xml 来确认"这个钩子到底还会不会红"。写死成
+# 脚本所在目录的绝对路径，那个自检就只能去动真实仓库的 coverage.xml 了。
+# 代价是必须从仓库根调用（make orphans 和 pre-commit 钩子都是这么跑的）。
+SOURCE_ROOT = Path("src")
+DEFAULT_XML = Path("coverage.xml")
 
 # 豁免：`plugins/_template/` 是给新插件照着抄的骨架，两个函数都直接
 # `raise NotImplementedError` —— 它从来就不是要被跑的逻辑，没有测试是对的。

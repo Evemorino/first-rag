@@ -16,6 +16,9 @@ coverage.xml
 mutants/
 .mutmut-cache
 
+# 门禁自检临时仓库（make gate-selftest 建的，跑完即删）
+.gate-selftest/
+
 # AI / agent working directory (session memory, not project source)
 .workbuddy-ai/
 

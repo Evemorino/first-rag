@@ -56,8 +56,30 @@ make hooks        # = uv run pre-commit install
   它必须设 `verbose: true`：pre-commit 对**成功**的钩子默认不打印输出，
   不开的话提醒是看不见的（装完第一次提交就发现了：只显示一行 Passed）。
 - **分层与规模只管 `src/`**；`example/` 是示例代码，豁免质量钩子。
+- **钩子自己也会坏，而且坏得很安静**。改了 `.pre-commit-config.yaml` 或
+  `scripts/` 下任何一个检查脚本之后，跑 `make gate-selftest`（约 10 秒）：
+  它给每个钩子植入一个已知违规，断言"必须红"，再拿一个干净仓库断言"必须绿"。
 
 改 README 这类非 Python 文件不会触发测试；想临时跳过用 `git commit --no-verify`。
+
+### 门禁自检
+
+```sh
+make gate-selftest                  # 26 个用例：13 个"该红" + 13 个"该绿"
+uv run python scripts/gate_selftest.py --why    # 打印每个用例为什么这样设计
+```
+
+只测"该红时不红"是不够的 —— 一个永远报错的钩子也能通过。所以每个钩子都配了
+一个干净仓库的对照组。自检本身也可以被验证：把 `scripts/lint_layers.py` 的
+`main()` 开头塞一行 `return 0`，自检必须报"期望红 实际绿"并退出 1。
+
+自检过程顺带挖出了两条从来没写在任何地方的事实：
+
+- `check-merge-conflict` **只在 merge/rebase 中干活**（靠 `.git/MERGE_MSG` 判断），
+  平时提交它永远绿 —— 这不是 bug，但"它平时不保护你"值得知道。
+- pytest 钩子会往工作区写 `coverage.xml`，而 pre-commit 一旦发现"钩子改了被
+  跟踪的文件"就判失败。真实仓库一直是绿的，全靠 `coverage.xml` 在 `.gitignore`
+  里；把这行删掉，每次提交都会红。
 
 ### 分层与规模
 

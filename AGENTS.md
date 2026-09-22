@@ -44,6 +44,7 @@ make mutation-selfcheck  # 已知必死改动的自检：抓不住就别信变�
 make mutation      # 变异测试（mutmut），默认只打核心链路（内部先跑自检，末尾核对文档基线）
 make baseline      # 只核对不重跑：README 里的分数还准不准 + 哪些文件比上次跑批新
 make hooks         # 装 pre-commit：每次 commit 自动跑 13 个钩子
+make gate-selftest # 门禁自检：给每个钩子植入违规，看它到底红不红（约 10 秒）
 ```
 
 ## 目录速查
@@ -73,6 +74,7 @@ scripts/lint_layers.py   # 分层依赖门禁：AST 查 src/ 的 import 方向
 scripts/size_guard.py    # 规模门禁：src/ 文件 SLOC 与函数行数上限
 scripts/mutation_selfcheck.py  # 变异自检 canary（改坏源码看测试红不红）
 scripts/baseline_check.py      # 文档基线核对：mutants/ 真实结果 vs README 写死的数字
+scripts/gate_selftest.py       # 门禁自检：给 13 个钩子各植入一个违规，断言它真会红
 tests/mutmut_compat.py  # mutmut 3.x 对 `src.` 包名的兼容补丁（见文件头）
 config/            # schema.json（类型/rubric/检索/trae 映射/保留期）、repos.txt、scope.json
 data/              # qdrant/ 与 raw/（gitignore；备份=复制本目录）
