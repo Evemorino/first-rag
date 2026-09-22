@@ -123,23 +123,41 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   的阈值远得很。所以"新加了模块却一个测试都没写"能悄无声息地溜过门禁，
   只有这里会喊。豁免 `plugins/_template/`：那是给新插件照抄的骨架，两个函数
   都直接 `raise NotImplementedError`，没有测试才是对的。
-- **变异测试**默认只打核心链路（ids / similarity / ark_client / distill_prompt /
-  ingest / sync，外加宪法 V 的脱敏边界 sanitize，见 `pyproject.toml` 的
-  `only_mutate`）。当前基线：408 个变异体
-  被杀死、70 个存活、5 个无测试覆盖，**变异分数 85.4%**。
+- **变异测试**默认只打"改坏了会**静默**出问题"的链路：宪法 VII 点名的手写核心
+  （ids / similarity / ark_client / distill_prompt）+ 幂等入库与编排
+  （ingest / sync）+ 宪法 V 的脱敏边界（sanitize）+ 三条主流程
+  （ask / collect / distill），见 `pyproject.toml` 的 `only_mutate`。
+  当前基线：1493 个变异体
+  被杀死、25 个存活、14 个无测试覆盖，**变异分数 98.4%**。
 
   往 `only_mutate` 里加模块时要注意：mutmut 只跑已有 `.meta` 里待检查的变异体，
   **新加的文件不会自动 collect**（它连 `collect` 子命令都没有），加完必须
   `mv mutants /tmp/…` 完整重建一遍才会真正生效 —— 否则就是"配置写了但没跑"，
   又是一个只有数字、没有实质的信号。
 
-  存活的 71 个里，约 34 个在 `sync.__try_lock` —— 那是 Windows 的 `msvcrt`
-  分支，在 macOS 上根本执行不到；约 31 个是 prompt 里的字段名与示例文案
-  （`"source"` 改成 `"SOURCE"` 这种）。这两类都不该靠测试去杀：前者得造假
-  平台环境，后者得把整段 prompt 抄进断言，维护成本远高于收益。
-  所以 `pyproject.toml` 里用 `do_not_mutate_patterns` 排除了纯文案行与日志行
-  ——变异测试该验证逻辑，不是验证文案。核心的 `similarity.filter_novel` 与
-  `ingest.upsert` 只剩 2 个存活，都是等价变异（改了行为不变）。
+  存活的 25 个逐条看过，分两类，**没有一类是"还没来得及查"**：
+
+  - **文案与输出格式**（21 个）：prompt 话术（5）、usage / 报错提示的措辞
+    （8）、`logger.exception` 的日志串（3）、引用行的 `[:80]` 截断（2）、
+    `json.dumps(indent=)`（2）、`print("\n引用：")`（1）。要杀掉它们只能把
+    整段文案抄进断言 —— 维护成本远高于收益。
+  - **已证等价**（4 个，改了行为不变，**任何**测试都杀不死）：
+    `ingest.upsert` 传给 `filter_novel` 的 `collection_name`（`filter_novel`
+    的默认值就是 `config.COLLECTION`）、`sync.main` 的 `ensure_ascii`
+    （summary 目前全是 ASCII）、`distill._direct_type` 里 `note_type` 的
+    默认值（大写 `REFLECTION` 不会出现在 schema 的 type 名里，于是一样会
+    走兜底）。**它们不进 `do_not_mutate_patterns`**：前提一旦变了（比如
+    summary 里出现中文），变异体会自己变回真信号 —— 写死排除规则反而会
+    永久性地盖住它。
+
+  `pyproject.toml` 里用 `do_not_mutate_patterns` 排除了纯文案行、日志行与
+  编码名所在的行 ——变异测试该验证逻辑，不是验证文案，也不是验证一个
+  大小写不敏感的 codec 名。排除的是"行"，所以顺带也排掉了同行那些
+  "改了立刻崩"的变异（崩是响的，不是静默的）。
+
+  **别为了分数好看补断言**：把 `search_limit` 等于几、`collection_name`
+  等于什么写进断言，杀掉的是变异体，不是风险 —— 那种断言测的是实现，
+  换个等价写法就全废。
 
   这个数字写完就会开始腐烂，所以它不是"记一次就完事"：`make mutation` 跑完
   时会自动拿 `mutants/` 里的真实结果和上面这句话比对，不一致就报错

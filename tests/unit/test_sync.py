@@ -253,8 +253,23 @@ def test_main_exits_nonzero_on_pipeline_failure(pipeline, monkeypatch):
 
 
 def test_main_exits_nonzero_when_sync_already_running(pipeline):
+    # 退出码要能区分"有人在跑"(2) 和"跑失败了"(1)：cron 撞锁是正常情况，
+    # 不该和真故障混成一个码。断言写成 != 0 的话，2 改成 3 也没人发现。
     with sync._lock(config.SYNC_LOCK_PATH):
-        assert sync.main(["sync"]) != 0
+        assert sync.main(["sync"]) == 2
+
+
+def test_main_prints_summary_json_to_stdout(pipeline, capsys):
+    """stdout 是给 shell/Makefile 消费的（make sync | jq），格式就是契约。"""
+    assert sync.main(["sync", "D=2026-09-18"]) == 0
+
+    assert json.loads(capsys.readouterr().out) == {
+        "date": "2026-09-18",
+        "materials": 1,
+        "entries": 1,
+        "upserted": 1,
+        "raw_removed": 0,
+    }
 
 
 def test_main_rejects_invalid_date(pipeline):

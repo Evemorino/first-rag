@@ -250,9 +250,11 @@ def test_unknown_type_retries_once_with_correction(
         ]}),
     ])
     calls = []
+    json_modes = []
 
     def fake_chat(messages, json_mode=False):
         calls.append(messages)
+        json_modes.append(json_mode)
         return next(responses)
 
     monkeypatch.setattr(distill, "chat", fake_chat)
@@ -265,6 +267,11 @@ def test_unknown_type_retries_once_with_correction(
         "Corrected entry",
     ]
     assert len(calls) == 2
+    # 追问也必须要求 JSON：拿回自由文本会被当成 invalid JSON，条目静默丢掉。
+    assert json_modes == [True, True]
+    # distill_version 是溯源字段（`模型+rubric@哈希`），追问出来的条目不能变成 None
+    assert all(e.distill_version.startswith("test-model+rubric@")
+               for e in entries)
     correction = calls[1][-1]["content"]
     assert "banana" in correction
     assert "progress" in correction
@@ -376,3 +383,52 @@ def test_no_materials_is_noop_without_llm_call(
     assert entries == []
     assert calls == []
     assert load_snapshot(day_raw.day)["distill_run"]["status"] == "noop"
+
+
+def test_direct_type_defaults_to_reflection_without_note_type():
+    """meta 里没写 note_type 时默认 reflection —— 默认值是契约的一部分。"""
+    material = make_material("A note", source="manual", ref="inbox.md",
+                             kind="note")
+
+    assert distill._direct_type(material, ["progress", "reflection"]) == "reflection"
+
+
+def test_direct_type_falls_back_to_reflection_when_requested_type_is_unknown():
+    """手记写了 schema 里没有的 note_type → 兜底成 reflection，不是报错。
+
+    这条兜底分支此前一行断言都没有：三个变异体（`"REFLECTION" in`、
+    `not in`、`allowed_types[1]`）全部存活，也就是说"未知类型会变成什么"
+    完全没被定义过 —— 而它直接决定这条记忆以后能被哪种过滤检索到。
+    """
+    material = make_material(
+        "A note", source="manual", ref="inbox.md", kind="note",
+        meta={"note_type": "nonsense"})
+
+    assert distill._direct_type(material, ["progress", "reflection"]) == "reflection"
+
+
+def test_direct_type_falls_back_to_first_allowed_type_without_reflection():
+    """schema 里连 reflection 都没有 → 用第一个允许的类型，不能凭空造一个。
+
+    兜底成硬编码的 "reflection" 会让 payload 里出现一个 schema 不允许的
+    type：以后按类型过滤永远检索不到它，而且不报错。
+    """
+    material = make_material(
+        "A note", source="manual", ref="inbox.md", kind="note",
+        meta={"note_type": "nonsense"})
+
+    assert distill._direct_type(material, ["progress", "error"]) == "progress"
+
+
+def test_unknown_note_type_still_produces_a_retrievable_entry(
+        isolated_config, monkeypatch):
+    monkeypatch.setattr(
+        distill, "chat", lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("手记不该走 LLM")))
+    day_raw = make_day_raw([
+        make_material("A note", source="manual", ref="inbox.md",
+                      kind="note", meta={"note_type": "nonsense"})])
+
+    entries = distill.distill(day_raw)
+
+    assert [e.type for e in entries] == ["reflection"]

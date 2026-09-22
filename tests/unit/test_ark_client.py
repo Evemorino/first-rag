@@ -129,6 +129,20 @@ def test_chat_returns_assistant_text_and_supports_json_mode(fake_client, ark_env
     ]
 
 
+def test_chat_returns_empty_string_when_model_sends_no_content(
+    fake_client, ark_env, monkeypatch
+):
+    """模型返回 content=None 时归一成空串，而不是把 None 交给上层。
+
+    上层（distill 的 JSON 解析、ask 的回答渲染）拿到 None 会在更远的地方炸，
+    排查成本比在这里做一次归一高得多。
+    """
+    monkeypatch.setattr(ark_client, "_client", lambda: fake_client)
+    fake_client.chat.completions.content = None
+
+    assert ark_client.chat([{"role": "user", "content": "hi"}]) == ""
+
+
 def test_chat_defaults_to_plain_text_when_json_mode_is_omitted(
     fake_client, ark_env, monkeypatch
 ):
