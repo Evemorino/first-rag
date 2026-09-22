@@ -1,0 +1,43 @@
+# 提交前自动跑的门禁。
+#
+# 安装：uv sync（pre-commit 已在 dev 组）后执行 `uv run pre-commit install`。
+# 卸载：`uv run pre-commit uninstall` —— 只删 .git/hooks，配置留着无害。
+# 手动全量跑一遍：`uv run pre-commit run --all-files`。
+#
+# 门禁内容按"从便宜到贵"排：先做毫秒级的文本与密钥检查，
+# 通过后才轮到几秒级的测试与 CRAP。改 README 不会触发测试（types: python）。
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files        # data/ 之类的大文件不该进库
+        args: ["--maxkb=512"]
+      - id: check-merge-conflict
+      - id: check-json
+      - id: check-yaml
+      - id: check-ast
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      # 宪法 V：密钥 MUST NOT 出现在任何提交物里。这是唯一能自动守住它的一环。
+      - id: detect-private-key
+
+  - repo: local
+    hooks:
+      # --no-sync：环境本来就是常驻的，没必要每次提交都重新构建一遍包
+      - id: pytest
+        name: pytest（顺带产出 coverage.xml 给 CRAP 用）
+        entry: uv run --no-sync python -m pytest -q --cov=src --cov-report=xml
+        language: system
+        pass_filenames: false
+        types: [python]
+        # 测试挂了就到此为止：否则下一个 CRAP 钩子会拿一份残缺的
+        # coverage.xml（只跑了没失败的那部分测试）去判门禁，
+        # 报出一堆根本不存在的 crappy 函数，把人往错误的方向引。
+        fail_fast: true
+      - id: crap
+        name: CRAP 门禁（复杂度 × 未覆盖度）
+        entry: uv run --no-sync python scripts/crap.py --top 10
+        language: system
+        pass_filenames: false
+        types: [python]

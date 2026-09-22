@@ -328,9 +328,10 @@ def test_invalid_json_marks_snapshot_failed_after_retry(
     )
     day_raw = make_day_raw([make_material()])
 
-    with pytest.raises(distill.DistillError):
+    with pytest.raises(distill.DistillError) as excinfo:
         distill.distill(day_raw)
 
+    assert str(excinfo.value) == "LLM returned invalid JSON"
     assert load_snapshot(day_raw.day)["distill_run"]["status"] == "failed"
 
 

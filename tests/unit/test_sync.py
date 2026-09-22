@@ -109,8 +109,13 @@ def test_lock_is_held_while_pipeline_runs(pipeline):
 
 def test_second_sync_rejected_immediately(pipeline):
     with sync._lock(config.SYNC_LOCK_PATH):
-        with pytest.raises(sync.SyncInProgressError):
+        with pytest.raises(sync.SyncInProgressError) as excinfo:
             sync.run(DAY)
+
+    # 锁路径必须写进消息：并发撞锁时，用户得知道去哪个文件删。
+    assert str(excinfo.value) == (
+        f"another sync is already running (lock: {config.SYNC_LOCK_PATH})"
+    )
     # after release the sync can run again
     assert sync.run(DAY)["upserted"] == 1
 
@@ -120,8 +125,11 @@ def test_lock_released_after_failed_pipeline(pipeline, monkeypatch):
         raise RuntimeError("qdrant down")
 
     monkeypatch.setattr(sync.ingest, "upsert", boom)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError) as excinfo:
         sync.run(DAY)
+
+    # 原样向上抛，不许包装成 SyncError —— 真正的故障原因不能被吞掉。
+    assert str(excinfo.value) == "qdrant down"
     # lock must not stay behind after a crash inside the pipeline
     with sync._lock(config.SYNC_LOCK_PATH):
         pass

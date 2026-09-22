@@ -12,7 +12,13 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest"]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "mutmut",
+    "radon",
+    "pre-commit",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -24,3 +30,55 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+# --- 覆盖率：变异测试与 CRAP 的共同输入 ---
+[tool.coverage.run]
+source = ["src"]
+branch = false
+omit = ["*/scripts/*"]
+# 让 coverage.xml 里的 filename 带子目录，CRAP 才能对上文件
+# （插件目录里有一堆 __init__.py，光靠 basename 会撞车）
+relative_files = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@overload",
+    "\\.\\.\\.",
+]
+
+[tool.coverage.xml]
+output = "coverage.xml"
+
+# --- 变异测试：mutmut ---
+# 全库跑变异太慢（数千个变异体 × 十几秒测试），默认只打核心链路；
+# 想换目标就改下面的 only_mutate，mutmut 3.x 的范围只能在配置里定。
+[tool.mutmut]
+source_paths = ["src/"]
+# 默认只打核心链路：宪法 VII 点名的手写核心（ids / similarity / ark_client /
+# distill_prompt）+ 幂等入库与编排（ingest / sync）。想全量就把这行删掉。
+only_mutate = [
+    "src/ids.py",
+    "src/similarity.py",
+    "src/ark_client.py",
+    "src/distill_prompt.py",
+    "src/ingest.py",
+    "src/sync.py",
+]
+pytest_add_cli_args = ["-x", "-q", "--no-header", "-p", "no:cacheprovider"]
+# mutants/ 是独立的工作副本，测试要读 config/schema.json，得一起复制过去
+also_copy = ["config/"]
+do_not_mutate = ["src/plugins/_template/*"]
+# 按源码行排除：只跳过"纯文案"行 —— 拼给 LLM 的 JSON 字段名、示例文本、
+# 日志格式串。改这些不会改变程序行为，测试要杀掉它们只能把整段文案抄进
+# 断言里，维护成本远高于收益。变异测试该验证逻辑，不是验证文案。
+# 注意别误伤带逻辑的行（如 `"ts": x if x else None` 就故意不匹配）。
+do_not_mutate_patterns = [
+    '^\s*"[a-z_]+":\s*material\.[a-z_]+(\.[a-z_]+\(\))?\s*,$',
+    '^\s*"[a-z_]+":\s*[\["]',
+    '^\s*(logger|logging)\.(info|warning|error|debug)\(',
+    '^\s*logging\.basicConfig\(',
+]

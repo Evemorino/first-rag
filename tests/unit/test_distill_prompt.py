@@ -105,6 +105,25 @@ def test_build_messages_returns_system_then_user_prompt():
     ]
 
 
+def test_output_example_uses_the_first_configured_type():
+    """示例里的 type 必须取类型枚举的第一项 —— 枚举顺序由 schema 决定。"""
+    prompt = distill_prompt.build_system_prompt(SCHEMA)
+
+    assert '"type": "progress"' in prompt
+    assert '"type": "error"' not in prompt
+
+
+def test_output_example_keeps_non_ascii_readable():
+    """ensure_ascii=False：中文标签不该被转成 \\uXXXX，模型更认得原文。"""
+    schema = dict(SCHEMA)
+    schema["types"] = [{"name": "进步", "desc": "有可见产出的工作。"}]
+
+    prompt = distill_prompt.build_system_prompt(schema)
+
+    assert "进步" in prompt
+    assert "\\u" not in prompt
+
+
 def test_user_prompt_supports_days_with_no_materials():
     day_raw = DayRaw(
         day=date(2026, 9, 20),

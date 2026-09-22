@@ -132,6 +132,60 @@ def test_parse_skips_other_days(sessions_dir):
     assert "today" in mat.text
 
 
+# --- 错误信号提取：蒸馏靠它判断"这一天踩了什么坑"（FR-002）---
+
+
+@pytest.mark.parametrize("event, expected", [
+    ({"is_error": True}, True),
+    ({"toolUseResult": {"is_error": True}}, True),
+    ({"toolUseResult": {"stderr": "Traceback: boom"}}, True),
+    ({"toolUseResult": {"stdout": "all good"}}, False),
+    ({"toolUseResult": "not-a-dict"}, False),
+    ({}, False),
+], ids=["flagged", "result-flagged", "stderr", "stdout-only",
+        "non-dict-result", "empty"])
+def test_is_error_detects_failure_signals(event, expected):
+    assert claude_code._is_error(event) is expected
+
+
+def test_error_text_prefers_content_over_tool_result():
+    event = {"content": "permission denied",
+             "toolUseResult": {"stderr": "secondary"}}
+
+    assert claude_code._error_text(event) == "permission denied"
+
+
+@pytest.mark.parametrize("result, expected", [
+    ({"stderr": "from stderr"}, "from stderr"),
+    ({"stdout": "from stdout"}, "from stdout"),
+])
+def test_error_text_falls_back_to_result_streams(result, expected):
+    assert claude_code._error_text({"toolUseResult": result}) == expected
+
+
+def test_error_text_stringifies_when_no_stream_available():
+    """既没 stderr 也没 stdout 时，退到 str(result) —— 总比丢掉这次失败强。"""
+    result = {"exit_code": 1}
+
+    assert claude_code._error_text({"toolUseResult": result}) == str(result)
+
+
+def test_error_text_serializes_non_string_content():
+    event = {"content": [{"type": "text", "text": "boom"}]}
+
+    assert claude_code._error_text(event) == json.dumps(
+        [{"type": "text", "text": "boom"}], ensure_ascii=False)
+
+
+def test_error_text_truncates_very_long_output():
+    long_text = "x" * 5000
+
+    result = claude_code._error_text({"content": long_text})
+
+    assert len(result) == 2001
+    assert result.endswith("…")
+
+
 def test_registered_in_registry():
     from src.plugins import iter_plugins
     names = [p.name for p in iter_plugins()]

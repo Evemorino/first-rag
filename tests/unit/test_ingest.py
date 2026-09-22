@@ -147,11 +147,43 @@ def test_upsert_deduplicates_same_identity_within_one_batch(fake_qdrant, fake_em
     assert len(fake_qdrant.calls[0]["points"]) == 1
 
 
-def test_upsert_rejects_empty_entry_list_before_embedding(fake_embed):
-    # This intentionally differs from the empty-list no-op: an Entry containing
-    # empty text cannot produce a valid point ID or payload.
-    with pytest.raises(ValueError, match="entry text must not be empty"):
+def test_upsert_empty_text_error_message_is_exact():
+    """错误文案是给人看的，写错半个字都不能算通过。
+
+    与空列表 no-op 的区别：含空 text 的 Entry 既产不出合法 point ID，
+    也产不出合法 payload，所以必须是硬错误而不是静默跳过。
+    """
+    with pytest.raises(ValueError) as excinfo:
         ingest.upsert([make_entry(text="")])
+
+    assert str(excinfo.value) == "entry text must not be empty"
+
+
+def test_upsert_continues_past_a_duplicate_inside_the_batch(fake_qdrant, fake_embed):
+    """批内重复只应跳过它自己（continue），不能把后面的条目一起吞掉（break）。"""
+    first = make_entry()
+    duplicate = make_entry(project="changed-project")
+    third = make_entry(text="Learned that dedupe must not stop the batch.",
+                       source="codex")
+
+    report = ingest.upsert([first, duplicate, third])
+
+    assert report.upserted == 2
+    written = [point.id for point in fake_qdrant.calls[0]["points"]]
+    assert ids.point_id(third.source, third.date, third.text) in written
+
+
+def test_upsert_filters_novelty_against_configured_collection(monkeypatch,
+                                                             fake_embed):
+    """查重与写入都用 config.COLLECTION，不能悄悄落到 None 上。"""
+    monkeypatch.setattr(ingest.config, "COLLECTION", "configured-collection")
+    client = FakeQdrantClient(exists=True, points=[])
+    monkeypatch.setattr(ingest, "_client", lambda: client)
+
+    ingest.upsert([make_entry()])
+
+    assert client.queries[0]["collection_name"] == "configured-collection"
+    assert client.calls[0]["collection_name"] == "configured-collection"
 
 
 def test_upsert_skips_novelty_duplicate(fake_embed, monkeypatch):

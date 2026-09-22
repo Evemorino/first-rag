@@ -47,9 +47,16 @@ class FakeQdrant:
     def __init__(self, payloads):
         self.payloads = payloads
         self.deleted = []
+        self.scrolls = []
 
     def scroll(self, *, collection_name, scroll_filter=None,
                limit=100, with_payload=True):
+        self.scrolls.append({
+            "collection_name": collection_name,
+            "scroll_filter": scroll_filter,
+            "limit": limit,
+            "with_payload": with_payload,
+        })
         return ([SimpleNamespace(id=f"id-{i}", payload=p)
                  for i, p in enumerate(self.payloads)], None)
 
@@ -87,8 +94,17 @@ def test_load_day_raw_from_snapshot(raw_snapshot):
 
 
 def test_load_day_raw_missing_snapshot_fails(tmp_data_dir):
-    with pytest.raises(redistill.RedistillError):
+    with pytest.raises(redistill.RedistillError) as excinfo:
         redistill.load_day_raw(DAY)
+
+    # 中间夹的是 OS 给的 errno 文本（路径也随 tmp 变），整串比会很脆；
+    # 所以锁住首尾结构：谁的快照、为什么拿不到、用户该怎么办。
+    message = str(excinfo.value)
+    assert message.startswith(f"raw snapshot for {DAY} not available (")
+    assert "No such file or directory" in message
+    assert message.endswith(
+        "); redistill needs the day's snapshot within its retention window"
+    )
 
 
 def test_redistill_produces_diff(raw_snapshot, alignment_seam, monkeypatch):
@@ -170,3 +186,70 @@ def test_main_reports_pending_alignment_rule(raw_snapshot, monkeypatch):
     code = redistill.main(["redistill", f"D={DAY.isoformat()}"])
 
     assert code == 1
+
+
+# --- _fetch_day_entries：库里条目回读成 Entry，字段一个都不能走样 ---
+
+
+def test_fetch_day_entries_maps_full_payload_to_entry():
+    client = FakeQdrant([{
+        "text": "old entry", "date": DAY.isoformat(), "type": "error",
+        "tags": ["qdrant"], "source": "codex", "project": "first-rag",
+        "created_at": "2026-09-18T12:00:00",
+        "source_refs": ["s1", "c1"],
+        "distill_version": "m+rubric@abcd1234",
+        "related": ["00000000-0000-0000-0000-000000000001"],
+    }])
+
+    entries = redistill._fetch_day_entries(DAY, client=client)
+
+    assert len(entries) == 1
+    got = entries[0]
+    assert got.text == "old entry"
+    assert got.type == "error"
+    assert got.tags == ["qdrant"]
+    assert got.source == "codex"
+    assert got.project == "first-rag"
+    assert got.created_at == datetime(2026, 9, 18, 12, 0, 0)
+    assert got.source_refs == ["s1", "c1"]
+    assert got.distill_version == "m+rubric@abcd1234"
+    assert [str(r) for r in got.related] == [
+        "00000000-0000-0000-0000-000000000001"
+    ]
+
+
+def test_fetch_day_entries_falls_back_to_safe_defaults():
+    """Qdrant 里可能有老数据缺字段；回读不能炸，且要能看出缺了什么。"""
+    client = FakeQdrant([{}])
+
+    (got,) = redistill._fetch_day_entries(DAY, client=client)
+
+    assert got.text == ""
+    assert got.date == DAY.isoformat()   # 兜底用查询的那一天
+    assert got.type == ""
+    assert got.tags == []
+    assert got.source == ""
+    assert got.project is None
+    assert got.source_refs == []
+    assert got.distill_version == ""
+    assert got.related == []
+
+
+def test_fetch_day_entries_scrolls_only_the_requested_day():
+    client = FakeQdrant([{}])
+
+    redistill._fetch_day_entries(DAY, client=client)
+
+    call = client.scrolls[0]
+    assert call["collection_name"] == config.COLLECTION
+    assert call["limit"] == 256
+    assert call["with_payload"] is True
+    condition = call["scroll_filter"].must[0]
+    assert condition.key == "date"
+    assert condition.match.value == DAY.isoformat()
+
+
+def test_fetch_day_entries_returns_empty_list_when_day_is_absent():
+    client = FakeQdrant([])
+
+    assert redistill._fetch_day_entries(DAY, client=client) == []

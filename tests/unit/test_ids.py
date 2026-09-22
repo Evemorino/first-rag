@@ -8,6 +8,8 @@ content_hash = sha256(text) 的前 16 个十六进制字符。
 import hashlib
 import uuid
 
+import pytest
+
 from src import ids
 
 
@@ -50,14 +52,14 @@ def test_point_id_changes_when_identity_input_changes():
     assert changed_text != base
 
 
-def test_point_id_rejects_empty_identity_components():
-    for source, day, text in [
-        ("", "2026-09-20", "text"),
-        ("claude_code", "", "text"),
-        ("claude_code", "2026-09-20", ""),
-    ]:
-        try:
-            ids.point_id(source, day, text)
-        except ValueError:
-            continue
-        raise AssertionError("empty identity component must be rejected")
+@pytest.mark.parametrize("source, day, text, message", [
+    ("", "2026-09-20", "text", "source must not be empty"),
+    ("claude_code", "", "text", "date must not be empty"),
+    ("claude_code", "2026-09-20", "", "text must not be empty"),
+])
+def test_point_id_rejects_empty_identity_components(source, day, text, message):
+    """报错要指名道姓说清是哪个字段空了，否则用户只能猜。"""
+    with pytest.raises(ValueError) as excinfo:
+        ids.point_id(source, day, text)
+
+    assert str(excinfo.value) == message

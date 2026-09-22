@@ -6,6 +6,12 @@ or notes/ (constitution V, NON-NEGOTIABLE).
 
 import pytest
 
+from tests.mutmut_compat import apply_if_mutating
+
+# 必须在导入任何 src 模块之前打补丁，否则 mutmut 的 trampoline 会因为
+# 本项目的 `src.` 包名直接断言失败（详见 tests/mutmut_compat.py）。
+apply_if_mutating()
+
 
 @pytest.fixture
 def tmp_data_dir(tmp_path, monkeypatch):

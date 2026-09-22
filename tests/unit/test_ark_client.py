@@ -80,8 +80,10 @@ def test_embed_rejects_empty_input_before_network_call(fake_client, ark_env, mon
 
     monkeypatch.setattr(ark_client, "_client", fail_client)
 
-    with pytest.raises(ValueError, match="texts must not be empty"):
+    with pytest.raises(ValueError) as excinfo:
         ark_client.embed([])
+
+    assert str(excinfo.value) == "texts must not be empty"
 
 
 def test_embed_batches_texts_and_preserves_request_order(fake_client, ark_env, monkeypatch):
@@ -103,8 +105,12 @@ def test_embed_fails_when_response_count_mismatches(fake_client, ark_env, monkey
     monkeypatch.setattr(ark_client, "_client", lambda: fake_client)
     fake_client.embeddings.response_data = [FakeEmbedding(0, [0.1])]
 
-    with pytest.raises(RuntimeError, match="response count mismatch"):
+    with pytest.raises(RuntimeError) as excinfo:
         ark_client.embed(["first", "second"])
+
+    assert str(excinfo.value) == (
+        "embedding response count mismatch: expected 2, got 1"
+    )
 
 
 def test_chat_returns_assistant_text_and_supports_json_mode(fake_client, ark_env, monkeypatch):

@@ -81,7 +81,19 @@ def load_schema(path: Path = SCHEMA_PATH) -> dict:
 
 
 def _validate(schema: dict) -> None:
-    types = schema.get("types")
+    """按 section 分派校验；每个 section 的细则见各自的 _validate_*。
+
+    拆开的理由：原先 23 个分支挤在一个函数里（CRAP 32.8），任何一处改动都
+    要重读全函数。现在每个 section 独立，报错文案保持不变。
+    """
+    _validate_types(schema.get("types"))
+    _validate_distill(schema.get("distill"))
+    _validate_retrieval(schema.get("retrieval"))
+    _validate_trae_type_map(schema.get("trae_type_map", {}))
+    _validate_retention(schema.get("raw_retention_days"))
+
+
+def _validate_types(types: object) -> None:
     if not isinstance(types, list) or not types:
         raise ConfigError("schema.types must be a non-empty list")
     for i, t in enumerate(types):
@@ -90,7 +102,8 @@ def _validate(schema: dict) -> None:
                 f"schema.types[{i}] must be an object with 'name' and 'desc'"
             )
 
-    distill = schema.get("distill")
+
+def _validate_distill(distill: object) -> None:
     if not isinstance(distill, dict):
         raise ConfigError("schema.distill must be an object")
     for key in _DISTILL_KEYS:
@@ -101,10 +114,14 @@ def _validate(schema: dict) -> None:
     if distill["max_entries_per_day"] < 1:
         raise ConfigError("schema.distill.max_entries_per_day must be >= 1")
 
-    retrieval = schema.get("retrieval")
+
+def _validate_retrieval(retrieval: object) -> None:
     if not isinstance(retrieval, dict) or "top_k" not in retrieval:
         raise ConfigError("schema.retrieval must contain 'top_k'")
-    expand = retrieval.get("expand")
+    _validate_expand(retrieval.get("expand"))
+
+
+def _validate_expand(expand: object) -> None:
     if not isinstance(expand, dict):
         raise ConfigError("schema.retrieval.expand must be an object")
     for key in _EXPAND_KEYS:
@@ -117,12 +134,17 @@ def _validate(schema: dict) -> None:
             "schema.retrieval.expand.mode must be 'off', 'all', or a number"
         )
 
-    if not isinstance(schema.get("trae_type_map", {}), dict):
+
+def _validate_trae_type_map(trae_type_map: object) -> None:
+    if not isinstance(trae_type_map, dict):
         raise ConfigError("schema.trae_type_map must be an object")
 
-    retention = schema.get("raw_retention_days")
+
+def _validate_retention(retention: object) -> None:
     if retention is not None and (not isinstance(retention, int) or retention < 0):
-        raise ConfigError("schema.raw_retention_days must be a non-negative int or null")
+        raise ConfigError(
+            "schema.raw_retention_days must be a non-negative int or null"
+        )
 
 
 def type_names(schema: dict) -> list[str]:

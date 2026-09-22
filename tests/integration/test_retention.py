@@ -63,6 +63,16 @@ def world(tmp_data_dir, monkeypatch):
 
     monkeypatch.setattr(config, "load_schema", schema_retention_zero)
 
+    # 时间冻结：retention 以"真实今天"为基准（补跑历史时也应清过期快照），
+    # 若测试沿用真实时钟，日历一翻页 cutoff 就变，断言会从 1 漂到 2。
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(TODAY.year, TODAY.month, TODAY.day, 22, 0,
+                       tzinfo=tz or config.TZ)
+
+    monkeypatch.setattr(sync, "datetime", _FrozenDateTime)
+
     yield client
     client.close()
 

@@ -107,6 +107,63 @@ def test_char_cap_truncates(dirs, monkeypatch):
     assert total <= 200
 
 
+# --- _cap：超长日截断（FR-006）---
+
+
+def _day_raw(*texts):
+    return collect.DayRaw(
+        day=DAY,
+        collected_at=datetime(2026, 9, 18, 22, tzinfo=TZ),
+        materials=[
+            RawMaterial(source="fake", ref=f"r{i}",
+                        ts=datetime(2026, 9, 18, 10, tzinfo=TZ),
+                        kind="message", text=text, meta={"k": "v"})
+            for i, text in enumerate(texts)
+        ],
+    )
+
+
+def test_cap_leaves_days_under_the_limit_untouched():
+    day_raw = _day_raw("a" * 10, "b" * 10)
+
+    collect._cap(day_raw, 1000)
+
+    assert [m.text for m in day_raw.materials] == ["a" * 10, "b" * 10]
+
+
+def test_cap_truncates_the_overflowing_material_when_room_is_usable():
+    """剩余空间够（>100 字符）就截断保留，而不是整条丢掉。"""
+    day_raw = _day_raw("a" * 100, "b" * 500)
+
+    collect._cap(day_raw, 300)
+
+    assert [m.text for m in day_raw.materials] == ["a" * 100, "b" * 200]
+    # 截断后仍是一条完整素材：其余字段与 meta 都得留着
+    cut = day_raw.materials[1]
+    assert cut.source == "fake"
+    assert cut.kind == "message"
+    assert cut.meta == {"k": "v"}
+
+
+def test_cap_drops_the_material_when_under_100_chars_would_remain():
+    """剩下不到 100 字符就没意义了，整条丢弃而不是留个残片。"""
+    day_raw = _day_raw("a" * 195, "b" * 500)
+
+    collect._cap(day_raw, 200)
+
+    assert [m.text for m in day_raw.materials] == ["a" * 195]
+
+
+def test_cap_warns_about_the_cut(caplog):
+    day_raw = _day_raw("a" * 100, "b" * 500)
+
+    with caplog.at_level("WARNING", logger="src.collect"):
+        collect._cap(day_raw, 300)
+
+    assert any("day truncated at 100 chars" in record.getMessage()
+               for record in caplog.records)
+
+
 def test_scope_disables_tool(dirs, monkeypatch):
     calls = {"discover": 0}
 

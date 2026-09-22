@@ -176,8 +176,77 @@ def test_filter_novel_returns_indices_for_mixed_candidates():
     assert kept == [1]
 
 
+def test_search_defaults_to_five_hits():
+    """默认 k=5 是对外契约，调用方不传时也必须成立。"""
+    client = FakeQdrantClient()
+
+    similarity.search([0.1, 0.2], client=client,
+                      collection_name="learning_memory")
+
+    assert client.queries[0]["limit"] == 5
+
+
+def test_client_factory_points_at_local_qdrant(monkeypatch):
+    """_client 必须连本地 Qdrant，且不继承环境代理（FR-011 / 宪法 VI）。"""
+    captured = {}
+
+    class Recorder:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(similarity, "QdrantClient", Recorder)
+    monkeypatch.setattr(similarity.config, "QDRANT_URL",
+                        "http://localhost:6333")
+
+    similarity._client()
+
+    assert captured["url"] == "http://localhost:6333"
+    assert captured["trust_env"] is False
+
+
+def test_filter_novel_prefers_explicit_collection_over_config(monkeypatch):
+    """显式传入的 collection_name 必须盖过 config 默认值（`or` 而非 `and`）。"""
+    monkeypatch.setattr(similarity.config, "COLLECTION", "default-collection")
+    client = FakeQdrantClient(
+        responses={(1.0, 0.0): [scored_point("existing", 0.91)]}
+    )
+
+    similarity.filter_novel(
+        ["candidate"],
+        [[1.0, 0.0]],
+        client=client,
+        collection_name="explicit-collection",
+        threshold=0.82,
+    )
+
+    assert client.queries[0]["collection_name"] == "explicit-collection"
+
+
+def test_filter_novel_logs_why_a_candidate_was_skipped(caplog):
+    """跳过候选时要留下可排障的记录：候选是谁、撞上谁、分数多少。"""
+    client = FakeQdrantClient(
+        responses={(1.0, 0.0): [scored_point("existing", 0.91)]}
+    )
+
+    with caplog.at_level("INFO", logger="src.similarity"):
+        similarity.filter_novel(
+            ["candidate"],
+            [[1.0, 0.0]],
+            client=client,
+            collection_name="learning_memory",
+            threshold=0.82,
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        message.startswith("similarity: skipped candidate as duplicate of existing")
+        for message in messages
+    )
+    assert any("0.9100" in message for message in messages)
+
+
 def test_filter_novel_rejects_mismatched_lengths():
-    with pytest.raises(ValueError, match="same length"):
+    with pytest.raises(ValueError) as excinfo:
         similarity.filter_novel(
             ["candidate"],
             [],
@@ -185,6 +254,9 @@ def test_filter_novel_rejects_mismatched_lengths():
             collection_name="learning_memory",
             threshold=0.82,
         )
+
+    # 文案是给调用方看的，写错半个字也不能算通过
+    assert str(excinfo.value) == "point_ids and vectors must have the same length"
 
 
 def test_filter_novel_ignores_all_current_batch_ids_on_rerun():

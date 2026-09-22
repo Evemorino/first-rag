@@ -35,6 +35,11 @@ make redistill D=2026-09-18        # 重蒸馏对照（只看 diff）
 make redistill D=2026-09-18 APPLY=1  # 确认后整组替换
 make serve         # FastAPI 薄壳（:8300，health/log/sync/ask）
 make test          # pytest（unit + integration）
+make cov           # 行覆盖率 → coverage.xml
+make crap          # CRAP 指标（复杂度 × 未覆盖度），≥30 视为 crappy
+make mutation-selfcheck  # 已知必死改动的自检：抓不住就别信变异分数
+make mutation      # 变异测试（mutmut），默认只打核心链路（内部先跑自检）
+make hooks         # 装 pre-commit：每次 commit 自动跑 pytest + CRAP
 ```
 
 ## 目录速查
@@ -55,6 +60,9 @@ src/
   log.py / scope.py# 快记与范围选择入口
   plugins/         # 采集插件：claude_code / codex / kimi_code / trae / _template
   api/app.py       # FastAPI 薄壳（路由只做校验与调用）
+scripts/crap.py    # CRAP 计算器：radon 复杂度 × coverage 覆盖率
+scripts/mutation_selfcheck.py  # 变异自检 canary（改坏源码看测试红不红）
+tests/mutmut_compat.py  # mutmut 3.x 对 `src.` 包名的兼容补丁（见文件头）
 config/            # schema.json（类型/rubric/检索/trae 映射/保留期）、repos.txt、scope.json
 data/              # qdrant/ 与 raw/（gitignore；备份=复制本目录）
 notes/             # inbox.md 手动快记（gitignore）
@@ -67,6 +75,7 @@ specs/001-learning-memory-rag/  # spec/plan/data-model/contracts/tasks
 - **写入边界（NON-NEGOTIABLE）**：运行时只写 `data/`、`notes/`；临时产物用系统 tmp；
   产品源目录（`~/.claude`、`~/.codex`、`~/.kimi-code`、`~/.trae-cn`）严格只读。
 - **密钥**：只从 `.env`（gitignore）读，不进代码/配置模板/提交物；蒸馏前正则脱敏。
+  提交前由 pre-commit 的 `detect-private-key` 自动再拦一道。
 - **幂等**：条目 ID = uuid5(source|date|content_hash)；任何重跑不产生重复数据/边。
 - **扩展走配置或插件**：新类型改 `config/schema.json`；新采集源复制 `src/plugins/_template/`。
   两者都不许改核心代码。
