@@ -97,8 +97,14 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   只有这里会喊。豁免 `plugins/_template/`：那是给新插件照抄的骨架，两个函数
   都直接 `raise NotImplementedError`，没有测试才是对的。
 - **变异测试**默认只打核心链路（ids / similarity / ark_client / distill_prompt /
-  ingest / sync，见 `pyproject.toml` 的 `only_mutate`）。当前基线：383 个变异体
-  被杀死、71 个存活、5 个无测试覆盖，**变异分数 84.4%**。
+  ingest / sync，外加宪法 V 的脱敏边界 sanitize，见 `pyproject.toml` 的
+  `only_mutate`）。当前基线：407 个变异体
+  被杀死、71 个存活、5 个无测试覆盖，**变异分数 85.1%**。
+
+  往 `only_mutate` 里加模块时要注意：mutmut 只跑已有 `.meta` 里待检查的变异体，
+  **新加的文件不会自动 collect**（它连 `collect` 子命令都没有），加完必须
+  `mv mutants /tmp/…` 完整重建一遍才会真正生效 —— 否则就是"配置写了但没跑"，
+  又是一个只有数字、没有实质的信号。
 
   存活的 71 个里，约 34 个在 `sync.__try_lock` —— 那是 Windows 的 `msvcrt`
   分支，在 macOS 上根本执行不到；约 31 个是 prompt 里的字段名与示例文案
