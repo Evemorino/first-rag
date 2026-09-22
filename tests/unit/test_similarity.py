@@ -176,6 +176,39 @@ def test_filter_novel_returns_indices_for_mixed_candidates():
     assert kept == [1]
 
 
+def test_filter_novel_sees_past_the_whole_current_batch():
+    """本批次占满前 N 个槽位时，第 N+1 个槽位必须还能看见外面的重复项。
+
+    这是 search_limit = len(batch) + 1 里那个 "+1" 存在的理由：本批次的点
+    （幂等重跑时已经在库里）会占掉前 N 个结果，不多要一个槽位，外面的重复项
+    就被挤出结果集，去重会静默失效。
+
+    注意这个测试**杀不死** `+1` → `+2` 那个变异体 —— 结果按分数降序返回，
+    而批次内最多只有 N 个不同的 ID 能出现在结果里，所以第 N+1 位一定是一个
+    批次外的点；再多要槽位只会拿到分数更低的结果，排在它后面，`next()` 取到的
+    还是同一个。那是等价变异，已写进 pyproject 的 do_not_mutate_patterns。
+    """
+    batch_hits = [
+        scored_point("candidate-a", 0.99),   # 本批次，占槽 1
+        scored_point("candidate-b", 0.98),   # 本批次，占槽 2
+        scored_point("older-duplicate", 0.97),   # 批次外 → 槽 3（N+1）
+        scored_point("even-older", 0.96),        # 批次外 → 槽 4，+2 才看得见
+    ]
+    client = FakeQdrantClient(
+        responses={(1.0, 0.0): batch_hits, (0.0, 1.0): batch_hits}
+    )
+
+    kept = similarity.filter_novel(
+        ["candidate-a", "candidate-b"],
+        [[1.0, 0.0], [0.0, 1.0]],
+        client=client,
+        collection_name="learning_memory",
+        threshold=0.82,
+    )
+
+    assert kept == [], "本批次之外的重复项必须被看见，两个候选都该跳过"
+
+
 def test_search_defaults_to_five_hits():
     """默认 k=5 是对外契约，调用方不传时也必须成立。"""
     client = FakeQdrantClient()

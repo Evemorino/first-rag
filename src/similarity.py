@@ -110,8 +110,15 @@ def filter_novel(
     # ID. A same-day rerun contains the same IDs and must reach upsert again;
     # only points outside this batch count as genuine novelty duplicates.
     current_batch_ids = {str(point_id) for point_id in point_ids}
-    # At most len(batch) current points can occupy the top results, so one
-    # extra slot guarantees that an external duplicate remains observable.
+    # The +1 is exactly enough, not a safety margin: at most len(batch) of the
+    # returned points can belong to this batch (Qdrant returns distinct points,
+    # score-descending), so slot N+1 is always an outside point. Asking for more
+    # slots only appends worse-scoring hits behind it and `next()` still picks
+    # the same one -- that is why `+ 2` is an equivalent mutation no test can
+    # kill (recorded in pyproject's do_not_mutate_patterns).
+    # Dropping the +1 is the dangerous direction: the batch can then occupy all
+    # returned slots and push a real duplicate out of the result set, silently
+    # disabling dedup. That direction is covered by a test.
     search_limit = len(current_batch_ids) + 1
 
     kept: list[int] = []

@@ -58,10 +58,15 @@ output = "coverage.xml"
 # 想换目标就改下面的 only_mutate，mutmut 3.x 的范围只能在配置里定。
 [tool.mutmut]
 source_paths = ["src/"]
-# 默认只打核心链路：宪法 VII 点名的手写核心（ids / similarity / ark_client /
-# distill_prompt）+ 幂等入库与编排（ingest / sync）+ 宪法 V 的脱敏边界
-# （sanitize —— 它只有 26 行，24 个变异体，跑批多花不到一分钟，但那是
-# 「密钥会不会进 LLM」的闸门，值得）。想全量就把这行删掉。
+# 打的是"改坏了会静默出问题"的链路：宪法 VII 点名的手写核心（ids /
+# similarity / ark_client / distill_prompt）+ 幂等入库与编排（ingest / sync）
+# + 宪法 V 的脱敏边界（sanitize —— 它只有 26 行，24 个变异体，跑批多花不到
+# 一分钟，但那是「密钥会不会进 LLM」的闸门，值得）+ 三条主流程（ask / collect
+# / distill）。想全量就把这行删掉。
+#
+# 注意：加文件进去必须**整个重建** mutants/（`mv mutants /tmp/…`），
+# mutmut 3.x 不会为新增文件补生成变异体（连 collect 子命令都没有），
+# 不然你会以为覆盖扩大了，其实数字没动。
 only_mutate = [
     "src/ids.py",
     "src/similarity.py",
@@ -70,21 +75,36 @@ only_mutate = [
     "src/ingest.py",
     "src/sync.py",
     "src/sanitize.py",
+    "src/ask.py",
+    "src/collect.py",
+    "src/distill.py",
 ]
 pytest_add_cli_args = ["-x", "-q", "--no-header", "-p", "no:cacheprovider"]
 # mutants/ 是独立的工作副本：config/ 是测试要读的 schema.json；scripts/ 是因为
 # tests/unit/ 下有脚本单测（test_baseline_check 等）要 import 它们 —— 少了这条，
 # mutmut 会在收集 stats 阶段因 import 失败而整个跑不起来（踩过：加完脚本单测后
 # make mutation 直接挂掉，而 mutmut 不在 pre-commit 里，没有任何门禁会发现）。
-also_copy = ["config/", "scripts/"]
+# .pre-commit-config.yaml 同理：test_gate_selftest 要拿它核对"用例表和真实配置
+# 有没有各走各的"，而测试文件里的 REPO_ROOT 在副本里指向 mutants/ 自己。
+# 同一个坑踩了两次，记住：**任何测试要读仓库根的文件，都必须进 also_copy**。
+also_copy = ["config/", "scripts/", ".pre-commit-config.yaml"]
 do_not_mutate = ["src/plugins/_template/*"]
-# 按源码行排除：只跳过"纯文案"行 —— 拼给 LLM 的 JSON 字段名、示例文本、
-# 日志格式串。改这些不会改变程序行为，测试要杀掉它们只能把整段文案抄进
-# 断言里，维护成本远高于收益。变异测试该验证逻辑，不是验证文案。
-# 注意别误伤带逻辑的行（如 `"ts": x if x else None` 就故意不匹配）。
+# 按源码行排除，两类：
+# 1. 纯文案行 —— 拼给 LLM 的 JSON 字段名、示例文本、日志格式串。改这些不会
+#    改变程序行为，测试要杀掉它们只能把整段文案抄进断言里，维护成本远高于
+#    收益。变异测试该验证逻辑，不是验证文案。
+#    注意别误伤带逻辑的行（如 `"ts": x if x else None` 就故意不匹配）。
+# 2. 已证等价的行 —— 改了行为不变，因此**任何**测试都杀不死（下面那条）。
+#    每条都必须写清"为什么等价"和它的前提，前提变了这条排除就跟着失效。
 do_not_mutate_patterns = [
     '^\s*"[a-z_]+":\s*material\.[a-z_]+(\.[a-z_]+\(\))?\s*,$',
     '^\s*"[a-z_]+":\s*[\["]',
     '^\s*(logger|logging)\.(info|warning|error|debug)\(',
     '^\s*logging\.basicConfig\(',
+    # similarity.filter_novel 的 search_limit：+1 → +2 是等价变异。
+    # 前提：Qdrant 返回的点去重且按分数降序，而批次内只有 N 个不同的 ID，
+    # 所以第 N+1 位必定是批次外的点；多要槽位只会拿到排在它后面、分数更低的
+    # 结果，next() 取到的还是同一个。已用"批次占满前 N 槽 + 两个外部重复项"
+    # 的用例实证过：杀不死。反向（-1 / None）有测试盯着，能杀死。
+    '^\s*search_limit = len\(current_batch_ids\) \+ 1$',
 ]
