@@ -44,8 +44,34 @@ make serve                             # 按需 API：/health /log /sync /ask
 make hooks        # = uv run pre-commit install
 ```
 
-顺序是：大文件/冲突/JSON/YAML/AST → 行尾空白 → **密钥扫描** → pytest → CRAP。
+12 个钩子，按"从便宜到贵"排：大文件/冲突/JSON/YAML/AST → 行尾空白 →
+**密钥扫描** → 分层依赖 → 规模 → pytest → CRAP。
+
+- **pytest 挂了会直接停下**（`fail_fast`）—— 否则 CRAP 会拿一份残缺的
+  coverage.xml 判门禁，凭空报出一堆不存在的 crappy 函数。
+- **分层与规模只管 `src/`**；`example/` 是示例代码，豁免质量钩子。
+
 改 README 这类非 Python 文件不会触发测试；想临时跳过用 `git commit --no-verify`。
+
+### 分层与规模
+
+```sh
+make layers        # 分层依赖：src/ 的 import 方向对不对
+make layers-list   # 打印各层允许 import 什么
+make size          # 规模：src/ 单文件 ≤300 SLOC、单函数 ≤80 行
+make size-top      # 摸底：看最长的文件与函数
+```
+
+**分层**（`scripts/lint_layers.py`，依赖只能向下）：插件不许互相依赖、
+也不许反向依赖编排层；`api/` 只碰编排层；核心层（`similarity` / `ids` /
+`ark_client` / `distill_prompt`）不许依赖编排层；`config` 不依赖任何 src。
+写下时零违规 —— 加它是防半年后有人图省事破坏依赖方向。例外只有一条且写明
+理由：`distill_prompt → src.collect`（只为取 `DayRaw`）。
+
+**规模**（`scripts/size_guard.py`）用 SLOC 而非物理行数，免得罚注释写得好的
+文件；只管 `src/`，因为测试函数天然长。注意它只是底线：
+`codex.parse` 66 行复杂度 21（CRAP 21.1，全项目最高）它拦不住 ——
+真正的风险判断交给 CRAP。
 
 覆盖率只能说明"这行跑过没有"，说明不了"改坏了会不会被发现"。所以再加两层：
 

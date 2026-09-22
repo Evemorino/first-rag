@@ -1,9 +1,12 @@
 # All Python goes through `uv run` so the project-local .venv is used
 # without manual activation (uv is pinned in mise.toml).
-PY = uv run python
+# --no-sync：依赖本来就是常驻的，不带它时每条命令都会重建一遍 editable 包，
+# 又慢又在某些环境里失败（pre-commit 的钩子也是同样处理）。
+PY = uv run --no-sync python
 
 .PHONY: up down serve sync ask log scope embed-test test redistill
 .PHONY: cov crap crap-observe mutation mutation-selfcheck hooks
+.PHONY: layers layers-list size size-top
 
 # Infrastructure: the only container is Qdrant (PRD §6, constitution VI)
 up:
@@ -60,6 +63,23 @@ crap: cov
 # 摸基线用：只出报告不拦人
 crap-observe: cov
 	$(PY) scripts/crap.py --top 20 --observe
+
+# --- 结构门禁：毫秒级，只管 src/ ---
+# 分层：import 方向对不对（插件不许互相依赖、不许反向依赖编排层等）
+layers:
+	$(PY) scripts/lint_layers.py
+
+# 打印各层允许 import 什么，以及唯一的例外和它的理由
+layers-list:
+	$(PY) scripts/lint_layers.py --list
+
+# 规模：单文件 ≤300 SLOC、单函数 ≤80 行。用 SLOC，不罚注释写得好的文件
+size:
+	$(PY) scripts/size_guard.py
+
+# 摸底用：看最长的文件与函数，不判失败
+size-top:
+	$(PY) scripts/size_guard.py --top 10
 
 # 变异自检：先跑这个，再跑 mutation。
 # 它塞一个已知必死的改动进去，看测试抓不抓得住 —— 抓不住说明工具或断言有问题，

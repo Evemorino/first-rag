@@ -37,9 +37,11 @@ make serve         # FastAPI 薄壳（:8300，health/log/sync/ask）
 make test          # pytest（unit + integration）
 make cov           # 行覆盖率 → coverage.xml
 make crap          # CRAP 指标（复杂度 × 未覆盖度），≥30 视为 crappy
+make layers        # 分层依赖：src/ 的 import 方向（--list 看规则）
+make size          # 规模：src/ 单文件 ≤300 SLOC、单函数 ≤80 行
 make mutation-selfcheck  # 已知必死改动的自检：抓不住就别信变异分数
 make mutation      # 变异测试（mutmut），默认只打核心链路（内部先跑自检）
-make hooks         # 装 pre-commit：每次 commit 自动跑 pytest + CRAP
+make hooks         # 装 pre-commit：每次 commit 自动跑 12 个钩子
 ```
 
 ## 目录速查
@@ -53,6 +55,9 @@ src/
   distill_prompt.py# 蒸馏 prompt 运行时拼装 ★
   collect.py       # 汇聚插件 + git + 快记 → data/raw/YYYY-MM-DD.json
   distill.py       # 蒸馏编排：脱敏→LLM→校验→熔断
+  sanitize.py      # 脱敏：进 LLM 前抹掉密钥/令牌（宪法 V 的边界）
+  distill_candidates.py  # 候选条目校验：类型/标签/来源引用 → 可用与待重试两堆
+  distill_messages.py    # 追问 LLM 的话术（非法 JSON、未知类型各一次）
   ingest.py        # 嵌入→新颖度去重→Qdrant upsert（幂等）
   ask.py           # 过滤检索 + 引用式回答 + 关联扩展
   sync.py          # 串联主链路 + .sync.lock + retention 清理
@@ -61,6 +66,8 @@ src/
   plugins/         # 采集插件：claude_code / codex / kimi_code / trae / _template
   api/app.py       # FastAPI 薄壳（路由只做校验与调用）
 scripts/crap.py    # CRAP 计算器：radon 复杂度 × coverage 覆盖率
+scripts/lint_layers.py   # 分层依赖门禁：AST 查 src/ 的 import 方向
+scripts/size_guard.py    # 规模门禁：src/ 文件 SLOC 与函数行数上限
 scripts/mutation_selfcheck.py  # 变异自检 canary（改坏源码看测试红不红）
 tests/mutmut_compat.py  # mutmut 3.x 对 `src.` 包名的兼容补丁（见文件头）
 config/            # schema.json（类型/rubric/检索/trae 映射/保留期）、repos.txt、scope.json
