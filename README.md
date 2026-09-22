@@ -98,8 +98,8 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   都直接 `raise NotImplementedError`，没有测试才是对的。
 - **变异测试**默认只打核心链路（ids / similarity / ark_client / distill_prompt /
   ingest / sync，外加宪法 V 的脱敏边界 sanitize，见 `pyproject.toml` 的
-  `only_mutate`）。当前基线：407 个变异体
-  被杀死、71 个存活、5 个无测试覆盖，**变异分数 85.1%**。
+  `only_mutate`）。当前基线：408 个变异体
+  被杀死、70 个存活、5 个无测试覆盖，**变异分数 85.4%**。
 
   往 `only_mutate` 里加模块时要注意：mutmut 只跑已有 `.meta` 里待检查的变异体，
   **新加的文件不会自动 collect**（它连 `collect` 子命令都没有），加完必须

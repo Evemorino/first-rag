@@ -127,3 +127,23 @@ def test_chat_returns_assistant_text_and_supports_json_mode(fake_client, ark_env
             "response_format": {"type": "json_object"},
         }
     ]
+
+
+def test_chat_defaults_to_plain_text_when_json_mode_is_omitted(
+    fake_client, ark_env, monkeypatch
+):
+    """默认值是公开契约的一部分：不传 json_mode 就不该要 JSON 输出。
+
+    之前只测了显式 `json_mode=True`，于是 `json_mode: bool = False` 被改成
+    `True` 时测试全绿 —— 而那会改变所有不显式传参的调用方的行为。
+    """
+    monkeypatch.setattr(ark_client, "_client", lambda: fake_client)
+    messages = [{"role": "user", "content": "hello"}]
+
+    result = ark_client.chat(messages)
+
+    assert result == "assistant text"
+    # 整个调用字典都比对：多一个 response_format 就会失败
+    assert fake_client.chat.completions.calls == [
+        {"model": "test-chat-model", "messages": messages}
+    ]
