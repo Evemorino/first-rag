@@ -44,11 +44,12 @@ make serve                             # 按需 API：/health /log /sync /ask
 make hooks        # = uv run pre-commit install
 ```
 
-12 个钩子，按"从便宜到贵"排：大文件/冲突/JSON/YAML/AST → 行尾空白 →
-**密钥扫描** → 分层依赖 → 规模 → pytest → CRAP。
+13 个钩子，按"从便宜到贵"排：大文件/冲突/JSON/YAML/AST → 行尾空白 →
+**密钥扫描** → 分层依赖 → 规模 → pytest → CRAP → 孤儿模块。
 
 - **pytest 挂了会直接停下**（`fail_fast`）—— 否则 CRAP 会拿一份残缺的
-  coverage.xml 判门禁，凭空报出一堆不存在的 crappy 函数。
+  coverage.xml 判门禁，凭空报出一堆不存在的 crappy 函数。CRAP 与孤儿检查
+  都吃这份数据，所以必须排在 pytest 之后。
 - **分层与规模只管 `src/`**；`example/` 是示例代码，豁免质量钩子。
 
 改 README 这类非 Python 文件不会触发测试；想临时跳过用 `git commit --no-verify`。
@@ -76,8 +77,9 @@ make size-top      # 摸底：看最长的文件与函数
 覆盖率只能说明"这行跑过没有"，说明不了"改坏了会不会被发现"。所以再加两层：
 
 ```sh
-make cov           # 行覆盖率 → coverage.xml（下面两项的输入）
+make cov           # 行覆盖率 → coverage.xml（下面三项的输入）
 make crap          # CRAP = 复杂度² × (1-覆盖)³ + 复杂度，≥30 视为 crappy
+make orphans       # 孤儿模块：一行都没被测试跑过的（CRAP 的盲区）
 make mutation-selfcheck  # 先跑这个：确认"改坏源码 → 测试会红"这条链路真的通
 make mutation      # 变异测试：改坏源码，看测试能不能抓到（内部会先跑自检）
 ```
@@ -88,6 +90,12 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   **0 个 crappy**（`config.py:_validate` 按 section 拆成 6 个小函数；
   `collect._cap` / `redistill._fetch_day_entries` / `claude_code` 错误提取
   补测试到 100% 覆盖）。
+- **孤儿模块**（`scripts/orphan_check.py`）补的是 CRAP 的盲区：CRAP 问的是
+  "复杂的代码测够了吗"，问不了"这个模块有人碰过吗"。一个只有简单函数
+  （复杂度 1）的模块，哪怕零测试，CRAP 也只有 1×(1-0)³+1 = **2** —— 离 30
+  的阈值远得很。所以"新加了模块却一个测试都没写"能悄无声息地溜过门禁，
+  只有这里会喊。豁免 `plugins/_template/`：那是给新插件照抄的骨架，两个函数
+  都直接 `raise NotImplementedError`，没有测试才是对的。
 - **变异测试**默认只打核心链路（ids / similarity / ark_client / distill_prompt /
   ingest / sync，见 `pyproject.toml` 的 `only_mutate`）。当前基线：383 个变异体
   被杀死、71 个存活、5 个无测试覆盖，**变异分数 84.4%**。
@@ -106,7 +114,7 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   列出比上次跑批还新的 `src/`、`tests/` 文件 —— 那才是基线真正开始说谎的时刻
   （踩过一次：把 `distill.py` 从 417 行拆到 241 行，分数没变，但没人能事先知道）。
 
-两者都依赖 coverage 数据，所以顺序是 `cov → crap / mutation`。
+CRAP 与孤儿检查都依赖 coverage 数据，所以顺序是 `cov → crap / orphans / mutation`。
 
 ### 为什么还需要 `mutation-selfcheck`
 

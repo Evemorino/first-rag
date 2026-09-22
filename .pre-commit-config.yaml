@@ -60,3 +60,13 @@ repos:
         pass_filenames: false
         types: [python]
         exclude: ^example/
+      # CRAP 的盲区：全是简单函数的模块，哪怕零测试，CRAP 也只有 2。
+      # 但它必须排在 pytest 之后 —— 它吃的是 pytest 钩子产出的 coverage.xml
+      # （pytest 那步是 fail_fast，所以能拿到的一定是完整数据）。
+      - id: orphans
+        name: 孤儿模块（一行测试都没跑过的 src/ 模块）
+        entry: uv run --no-sync python scripts/orphan_check.py
+        language: system
+        pass_filenames: false
+        types: [python]
+        exclude: ^example/

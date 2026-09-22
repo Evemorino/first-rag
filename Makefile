@@ -6,7 +6,7 @@ PY = uv run --no-sync python
 
 .PHONY: up down serve sync ask log scope embed-test test redistill
 .PHONY: cov crap crap-observe mutation mutation-selfcheck hooks
-.PHONY: baseline baseline-update
+.PHONY: baseline baseline-update orphans orphans-top
 .PHONY: layers layers-list size size-top
 
 # Infrastructure: the only container is Qdrant (PRD §6, constitution VI)
@@ -64,6 +64,15 @@ crap: cov
 # 摸基线用：只出报告不拦人
 crap-observe: cov
 	$(PY) scripts/crap.py --top 20 --observe
+
+# 孤儿模块：一行都没被测试跑过的 src/ 模块。CRAP 抓不到它 —— 全是简单函数的
+# 模块哪怕零测试，CRAP 也只有 2，离 30 的阈值远得很。
+orphans: cov
+	$(PY) scripts/orphan_check.py
+
+# 摸底用：覆盖率最低的几个模块，不判失败
+orphans-top: cov
+	$(PY) scripts/orphan_check.py --top 10
 
 # --- 结构门禁：毫秒级，只管 src/ ---
 # 分层：import 方向对不对（插件不许互相依赖、不许反向依赖编排层等）

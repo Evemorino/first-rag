@@ -37,12 +37,13 @@ make serve         # FastAPI 薄壳（:8300，health/log/sync/ask）
 make test          # pytest（unit + integration）
 make cov           # 行覆盖率 → coverage.xml
 make crap          # CRAP 指标（复杂度 × 未覆盖度），≥30 视为 crappy
+make orphans       # 孤儿模块：一行测试都没跑过的 src/ 模块（CRAP 的盲区）
 make layers        # 分层依赖：src/ 的 import 方向（--list 看规则）
 make size          # 规模：src/ 单文件 ≤300 SLOC、单函数 ≤80 行
 make mutation-selfcheck  # 已知必死改动的自检：抓不住就别信变异分数
 make mutation      # 变异测试（mutmut），默认只打核心链路（内部先跑自检，末尾核对文档基线）
 make baseline      # 只核对不重跑：README 里的分数还准不准 + 哪些文件比上次跑批新
-make hooks         # 装 pre-commit：每次 commit 自动跑 12 个钩子
+make hooks         # 装 pre-commit：每次 commit 自动跑 13 个钩子
 ```
 
 ## 目录速查
@@ -67,6 +68,7 @@ src/
   plugins/         # 采集插件：claude_code / codex / kimi_code / trae / _template
   api/app.py       # FastAPI 薄壳（路由只做校验与调用）
 scripts/crap.py    # CRAP 计算器：radon 复杂度 × coverage 覆盖率
+scripts/orphan_check.py  # 孤儿模块：找出零覆盖的 src/ 模块（CRAP 抓不到）
 scripts/lint_layers.py   # 分层依赖门禁：AST 查 src/ 的 import 方向
 scripts/size_guard.py    # 规模门禁：src/ 文件 SLOC 与函数行数上限
 scripts/mutation_selfcheck.py  # 变异自检 canary（改坏源码看测试红不红）
