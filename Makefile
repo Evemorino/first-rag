@@ -117,8 +117,11 @@ baseline-update:
 # --- 提交门禁 ---
 # 装好之后，每次 git commit 会自动跑：文本/密钥检查 → pytest → CRAP。
 # 想临时跳过某次提交：git commit --no-verify（别养成习惯）。
+# 装两步：commit 前那 13 个钩子，外加一个 post-commit 提醒
+# （提醒"这次改动落在变异覆盖范围内"，它拦不住也拦不了，只能说一声）
 hooks:
 	uv run pre-commit install
+	uv run pre-commit install --hook-type post-commit
 
 hooks-run:
 	uv run pre-commit run --all-files

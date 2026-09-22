@@ -70,3 +70,14 @@ repos:
         pass_filenames: false
         types: [python]
         exclude: ^example/
+
+      # --- 提交后的提醒（post-commit，需要额外装这个 hook 类型）---
+      # 变异测试跑一遍半小时，进不了提交门禁，于是"改了核心代码却没重跑"
+      # 只能靠人记得 —— 本项目为此漏过两次。这里不拦人，只把该做的事说一声。
+      - id: mutation-reminder
+        name: 提醒：改动落在变异覆盖范围内（记得重跑 make mutation）
+        entry: uv run --no-sync python scripts/mutation_reminder.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [post-commit]
