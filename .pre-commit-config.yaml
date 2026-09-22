@@ -24,13 +24,31 @@ repos:
 
   - repo: local
     hooks:
+      # --- 毫秒级：只管 src/ 的结构约束 ---
       # --no-sync：环境本来就是常驻的，没必要每次提交都重新构建一遍包
+      - id: lint-layers
+        name: 分层依赖（src/ 的 import 方向）
+        entry: uv run --no-sync python scripts/lint_layers.py
+        language: system
+        pass_filenames: false
+        files: ^src/.*\.py$
+
+      - id: size-guard
+        name: 规模门禁（文件 ≤300 SLOC、函数 ≤80 行）
+        entry: uv run --no-sync python scripts/size_guard.py
+        language: system
+        pass_filenames: false
+        files: ^src/.*\.py$
+
+      # --- 秒级：测试与衍生指标 ---
+      # example/ 是示例代码，不参与质量门禁（它本来就不是要跑的东西）
       - id: pytest
         name: pytest（顺带产出 coverage.xml 给 CRAP 用）
         entry: uv run --no-sync python -m pytest -q --cov=src --cov-report=xml
         language: system
         pass_filenames: false
         types: [python]
+        exclude: ^example/
         # 测试挂了就到此为止：否则下一个 CRAP 钩子会拿一份残缺的
         # coverage.xml（只跑了没失败的那部分测试）去判门禁，
         # 报出一堆根本不存在的 crappy 函数，把人往错误的方向引。
@@ -41,3 +59,4 @@ repos:
         language: system
         pass_filenames: false
         types: [python]
+        exclude: ^example/
