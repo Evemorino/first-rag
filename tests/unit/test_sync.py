@@ -5,6 +5,7 @@ so these tests verify orchestration, locking, and retention only.
 """
 
 import json
+import sys
 from datetime import date, datetime
 
 import pytest
@@ -274,3 +275,17 @@ def test_main_prints_summary_json_to_stdout(pipeline, capsys):
 
 def test_main_rejects_invalid_date(pipeline):
     assert sync.main(["sync", "D=not-a-date"]) == 1
+
+
+def test_main_reads_sys_argv_when_argv_not_passed(pipeline, monkeypatch):
+    """`main()` 不传参数时必须去读 sys.argv —— `make sync D=…` 走的就是这条路。
+
+    这条在变异测试里是存活的（`sys.argv if (argv is None) and False else argv`
+    把条件恒判成假，于是永远用传入的 argv）。其余 main 测试全都显式传了
+    `["sync", …]`，所以"从真实命令行取参数"这一整条路径其实一个测试都没有 ——
+    测试名里带 main，看着像覆盖了，实际覆盖的是另一件事。
+    """
+    monkeypatch.setattr(sys, "argv", ["sync", "D=2026-09-18"])
+
+    assert sync.main() == 0
+    assert pipeline[0][1] == date(2026, 9, 18)

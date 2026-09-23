@@ -207,31 +207,43 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   （ids / similarity / ark_client / distill_prompt）+ 幂等入库与编排
   （ingest / sync）+ 宪法 V 的脱敏边界（sanitize）+ 三条主流程
   （ask / collect / distill），见 `pyproject.toml` 的 `only_mutate`。
-  当前基线：1553 个变异体
-  被杀死、28 个存活、14 个无测试覆盖，**变异分数 98.2%**。
+  当前基线：1344 个变异体
+  被杀死、238 个存活、24 个无测试覆盖，**变异分数 85.0%**。
 
   往 `only_mutate` 里加模块时要注意：mutmut 只跑已有 `.meta` 里待检查的变异体，
   **新加的文件不会自动 collect**（它连 `collect` 子命令都没有），加完必须
   `mv mutants /tmp/…` 完整重建一遍才会真正生效 —— 否则就是"配置写了但没跑"，
   又是一个只有数字、没有实质的信号。
 
-  存活的 28 个逐条看过，分两类，**没有一类是"还没来得及查"**：
+  **上面那份"存活 28 个逐条看过"的分类已经作废**，留在这里只当方法参考。
+  2026-09-23 第一次按 `mv mutants /tmp/…` 全量重建，结果是 **1344 杀 / 238 活 /
+  24 无覆盖 → 85.0%**。差这么多不是代码变差了，而是**旧数字从来没被完整判过**：
+  mutmut 3.x 按函数哈希复用判定，之后每次 `make mutation` 都只重跑改过的那几个，
+  于是 98% 这个数一路靠缓存维持 —— 和上面"新加文件不会 collect"是同一个坑，
+  只是这次的方向是反的（缓存让分数**虚高**）。
 
-  - **文案与输出格式**（21 个）：prompt 话术（5）、usage / 报错提示的措辞
-    （8）、`logger.exception` 的日志串（4）、引用行的 `[:80]` 截断（2）、
-    `json.dumps(indent=)`（1）、`print("\n引用：")`（1）。要杀掉它们只能把
-    整段文案抄进断言 —— 维护成本远高于收益。
-  - **已证等价**（7 个，改了行为不变，**任何**测试都杀不死）：两处
-    `"utf-8"` → `"UTF-8"`（codec 名大小写不敏感）、`filter_novel` 的
-    `+ 1` → `+ 2`（第 N+1 个槽位永远是批外点，见 `similarity.py` 的注释）、
-    `ingest.upsert` 传给 `filter_novel` 的 `collection_name`（写成 `None`
-    和整个删掉是两个变体；`filter_novel` 里是
-    `collection_name or config.COLLECTION`）、`sync.main` 的 `ensure_ascii`
-    （summary 目前全是 ASCII）、`distill._direct_type` 里 `note_type` 的
-    默认值（大写 `REFLECTION` 不在 schema 的 type 名里，一样走兜底，返回
-    值不变）。**它们不进 `do_not_mutate_patterns`**：前提一旦变了（比如
-    summary 里出现中文），变异体会自己变回真信号 —— 写死排除规则反而会
-    永久性地盖住它。
+  抽查过两条，确认新数字不是测量事故：
+
+  - `collect.x_gather__mutmut_6`（`collected_at` 的 `tz=config.TZ` → `tz=None`）
+    手工打进源码后 **409 个测试全绿** —— 真存活，`collected_at` 的时区确实没人断言。
+  - `sync.x__try_lock__mutmut_*` 共 14 条：那是 `except ImportError` 里的 Windows
+    `msvcrt` 分支，macOS 上根本不可达。`make mutation-selfcheck` 里本来就记着
+    "抓住它就是假杀"，所以这 14 条属预期。
+
+  剩下 224 条**还没逐条分类**，但聚集得很清楚，下一步该从哪看是明确的（按存活数）：
+  `collect._parse_json_object` 24、`ask/sync.main` 各 20、`distill_prompt._build_user_prompt`
+  20、`collect._repo_commits` 18、`collect._dated_note_files` 18、`distill._rubric_hash`
+  17、`distill.distill` 17、`collect.save_snapshot` 12 —— 其中 git 与快记两个采集源
+  合计 53 条，是最薄的一块。
+
+  记一条流程上的教训：**旧记录只留了数量、没留名单**，所以这次根本无法 diff
+  "哪几条是新增的"，只能整体重测。以后更新基线要连同变异体名一起记。
+
+  另外，原来列在"已证等价"里的 `distill._direct_type` 默认值那条，现在**被测试杀掉了**：
+  它声称"等价"的依据只是返回值不变，但大写 `REFLECTION` 会落进未知类型兜底、
+  多打一条对用户说谎的 WARNING。`test_direct_type_defaults_to_reflection_without_note_type`
+  现在同时断言"不产生告警"，所以它不再是等价变异体。其余等价判断（codec 名大小写、
+  `filter_novel` 的 `+1/+2`）依然成立。
 
   `pyproject.toml` 里的 `do_not_mutate_patterns` 只留了 4 条，排的是
   **纯文案行**：给 LLM 看的素材示例、整行就是一个字符串字面量、

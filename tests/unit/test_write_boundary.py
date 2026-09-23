@@ -19,6 +19,8 @@ Ark，进不了毫秒级的提交门禁；而违规的形状其实非常稳定 �
 from pathlib import Path
 import sys
 
+import pytest
+
 SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
@@ -72,7 +74,33 @@ def test_the_real_repo_passes_with_the_real_registry(monkeypatch):
     """
     monkeypatch.chdir(REPO_ROOT)
 
+    if wbc.mutmut_instrumented(Path("src")):
+        pytest.skip("mutmut 正把变异体就地写进 src/，此刻的写入点是生成代码")
+
     assert wbc.scan(Path("src")) == []
+
+
+def test_mutmut_instrumentation_is_detected_only_by_its_marker(tmp_path):
+    """跳过真树断言的判据必须窄到"只有 mutmut 就地生成时才成立"。
+
+    为什么需要跳过：mutmut 3.x 是把变异体**写进 src/ 的源文件**里跑的
+    （`x_save_snapshot__mutmut_1` 这种），于是上一刻还干净的树会凭空多出几十个
+    未登记的写入点 —— `make mutation` 因此在收集统计阶段就被我们自己的测试打断
+    （实测：72 处误报，EXIT=2）。
+    但"环境不对就跳过"是最容易烂成永久空转的一类代码，所以这里双向钉住：
+    干净树必须判 False，带标记才判 True。
+    """
+    clean = tmp_path / "src"
+    (clean / "plugins").mkdir(parents=True)
+    (clean / "ok.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (clean / "plugins" / "p.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+    assert wbc.mutmut_instrumented(clean) is False
+
+    (clean / "ok.py").write_text(
+        "def x_save__mutmut_1():\n    return 1\n", encoding="utf-8")
+
+    assert wbc.mutmut_instrumented(clean) is True
 
 
 def test_list_shows_every_registered_write_site(capsys, monkeypatch):

@@ -390,12 +390,21 @@ def test_no_materials_is_noop_without_llm_call(
     assert load_snapshot(day_raw.day)["distill_run"]["status"] == "noop"
 
 
-def test_direct_type_defaults_to_reflection_without_note_type():
-    """meta 里没写 note_type 时默认 reflection —— 默认值是契约的一部分。"""
+def test_direct_type_defaults_to_reflection_without_note_type(caplog):
+    """meta 里没写 note_type 时默认 reflection —— 且**不该**走未知类型分支。
+
+    只断言返回值不够：把默认值写成 `"REFLECTION"`，它会因为不在 allowed 里而
+    落进未知类型兜底，最终返回值同样是 `"reflection"`，于是变异体存活
+    （实测 `distill.x__direct_type__mutmut_9`）。差别只在多打一条 WARNING ——
+    而那条告警是会说谎的：用户根本没写错类型，日志却告诉他写错了。
+    """
     material = make_material("A note", source="manual", ref="inbox.md",
                              kind="note")
 
-    assert distill._direct_type(material, ["progress", "reflection"]) == "reflection"
+    with caplog.at_level("WARNING"):
+        assert distill._direct_type(material, ["progress", "reflection"]) == "reflection"
+
+    assert caplog.text == ""
 
 
 def test_direct_type_falls_back_to_reflection_when_requested_type_is_unknown():

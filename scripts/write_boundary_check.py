@@ -55,6 +55,24 @@ class Problem:
     site: str = ""
 
 
+MUTMUT_MARKER = "__mutmut_"
+
+
+def mutmut_instrumented(root: Path = SOURCE_ROOT) -> bool:
+    """这棵 src/ 是不是正被 mutmut 就地改写。
+
+    mutmut 3.x 的跑法是把变异体**写进源文件**（`x_save__mutmut_1` 这种），
+    于是上一刻还干净的树会凭空多出几十个未登记的写入点。任何"扫真树"的断言
+    在这种时刻报的都不是人的代码，所以给它一个窄判据 —— 判据本身有测试钉住
+    （test_mutmut_instrumentation_is_detected_only_by_its_marker），免得烂成
+    永久空转。
+    """
+    if not root.is_dir():
+        return False
+    return any(MUTMUT_MARKER in p.read_text(encoding="utf-8", errors="ignore")
+               for p in root.rglob("*.py"))
+
+
 def scan(root: Path, registry: dict | None = None) -> list[Problem]:
     """扫一棵 src/ 树，返回全部违规。
 
