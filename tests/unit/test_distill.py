@@ -240,11 +240,12 @@ def test_valid_llm_entry_uses_traceable_material_metadata(
 def test_unknown_type_retries_once_with_correction(
     isolated_config, monkeypatch
 ):
+    first_response = json.dumps({"entries": [
+        candidate("Valid entry"),
+        candidate("Bad type entry", type_name="banana"),
+    ]})
     responses = iter([
-        json.dumps({"entries": [
-            candidate("Valid entry"),
-            candidate("Bad type entry", type_name="banana"),
-        ]}),
+        first_response,
         json.dumps({"entries": [
             candidate("Corrected entry", type_name="error"),
         ]}),
@@ -276,6 +277,10 @@ def test_unknown_type_retries_once_with_correction(
     assert "banana" in correction
     assert "progress" in correction
     assert "error" in correction
+    # 追问必须把模型上一次的原始输出原样当 assistant 轮带回去。丢了它，
+    # 模型看不到自己写了哪几条、错在哪，只能凭 allowed_types 瞎猜，改不对
+    # 的条目会被静默丢掉（FR-012）—— 而"追问确实发了"这个断言还是绿的。
+    assert calls[1][-2] == {"role": "assistant", "content": first_response}
 
 
 def test_unknown_type_is_dropped_after_retry(

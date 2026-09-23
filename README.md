@@ -127,37 +127,50 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   （ids / similarity / ark_client / distill_prompt）+ 幂等入库与编排
   （ingest / sync）+ 宪法 V 的脱敏边界（sanitize）+ 三条主流程
   （ask / collect / distill），见 `pyproject.toml` 的 `only_mutate`。
-  当前基线：1493 个变异体
-  被杀死、25 个存活、14 个无测试覆盖，**变异分数 98.4%**。
+  当前基线：1553 个变异体
+  被杀死、28 个存活、14 个无测试覆盖，**变异分数 98.2%**。
 
   往 `only_mutate` 里加模块时要注意：mutmut 只跑已有 `.meta` 里待检查的变异体，
   **新加的文件不会自动 collect**（它连 `collect` 子命令都没有），加完必须
   `mv mutants /tmp/…` 完整重建一遍才会真正生效 —— 否则就是"配置写了但没跑"，
   又是一个只有数字、没有实质的信号。
 
-  存活的 25 个逐条看过，分两类，**没有一类是"还没来得及查"**：
+  存活的 28 个逐条看过，分两类，**没有一类是"还没来得及查"**：
 
   - **文案与输出格式**（21 个）：prompt 话术（5）、usage / 报错提示的措辞
-    （8）、`logger.exception` 的日志串（3）、引用行的 `[:80]` 截断（2）、
-    `json.dumps(indent=)`（2）、`print("\n引用：")`（1）。要杀掉它们只能把
+    （8）、`logger.exception` 的日志串（4）、引用行的 `[:80]` 截断（2）、
+    `json.dumps(indent=)`（1）、`print("\n引用：")`（1）。要杀掉它们只能把
     整段文案抄进断言 —— 维护成本远高于收益。
-  - **已证等价**（4 个，改了行为不变，**任何**测试都杀不死）：
-    `ingest.upsert` 传给 `filter_novel` 的 `collection_name`（`filter_novel`
-    的默认值就是 `config.COLLECTION`）、`sync.main` 的 `ensure_ascii`
+  - **已证等价**（7 个，改了行为不变，**任何**测试都杀不死）：两处
+    `"utf-8"` → `"UTF-8"`（codec 名大小写不敏感）、`filter_novel` 的
+    `+ 1` → `+ 2`（第 N+1 个槽位永远是批外点，见 `similarity.py` 的注释）、
+    `ingest.upsert` 传给 `filter_novel` 的 `collection_name`（写成 `None`
+    和整个删掉是两个变体；`filter_novel` 里是
+    `collection_name or config.COLLECTION`）、`sync.main` 的 `ensure_ascii`
     （summary 目前全是 ASCII）、`distill._direct_type` 里 `note_type` 的
-    默认值（大写 `REFLECTION` 不会出现在 schema 的 type 名里，于是一样会
-    走兜底）。**它们不进 `do_not_mutate_patterns`**：前提一旦变了（比如
+    默认值（大写 `REFLECTION` 不在 schema 的 type 名里，一样走兜底，返回
+    值不变）。**它们不进 `do_not_mutate_patterns`**：前提一旦变了（比如
     summary 里出现中文），变异体会自己变回真信号 —— 写死排除规则反而会
     永久性地盖住它。
 
-  `pyproject.toml` 里用 `do_not_mutate_patterns` 排除了纯文案行、日志行与
-  编码名所在的行 ——变异测试该验证逻辑，不是验证文案，也不是验证一个
-  大小写不敏感的 codec 名。排除的是"行"，所以顺带也排掉了同行那些
-  "改了立刻崩"的变异（崩是响的，不是静默的）。
+  `pyproject.toml` 里的 `do_not_mutate_patterns` 只留了 4 条，排的是
+  **纯文案行**：给 LLM 看的素材示例、整行就是一个字符串字面量、
+  `logger.info/warning/error/debug(` 与 `logging.basicConfig(`。
+  这里踩过一个坑值得记下来：**排除的单位是"行"，不是"变异"** ——
+  命中后该行的**所有**变异体都不再生成，所以每条 pattern 都得先回答
+  "这行除了我想排除的，还有没有别的逻辑"。曾经用 `"utf-8"` 这种"包含"式
+  pattern 排除编码名，结果连坐了同行的 `open(inbox, "a", …)`（`"a"` →
+  `"w"` 会让快记被覆盖）和 `.splitlines()`；同类还有 `[\["]` 这种宽松写法，
+  连坐了 `"citations": [asdict(c) …]` 这类真实 payload 行。这些行从此再也
+  不被变异检验，而**报告上看不出任何异常**。判据：宁可留一个等价变异体
+  在报告里当"已知存活"，也不要关掉一整行。
 
   **别为了分数好看补断言**：把 `search_limit` 等于几、`collection_name`
   等于什么写进断言，杀掉的是变异体，不是风险 —— 那种断言测的是实现，
-  换个等价写法就全废。
+  换个等价写法就全废。反过来，补断言要挑"改坏了会静默出错"的：比如
+  追问时漏掉模型上一次的原始输出，追问照样发出去、断言照样绿，只是
+  改不对的条目被悄悄丢掉 —— 这种才值得补（`tests/unit/test_distill.py`
+  的 `test_unknown_type_retries_once_with_correction`）。
 
   这个数字写完就会开始腐烂，所以它不是"记一次就完事"：`make mutation` 跑完
   时会自动拿 `mutants/` 里的真实结果和上面这句话比对，不一致就报错
@@ -186,6 +199,13 @@ CRAP 与孤儿检查都依赖 coverage 数据，所以顺序是 `cov → crap / 
 
 前两个选用**独立重算期望值**的契约型断言，不是把实现抄进测试的那种；
 第三个是反向对照 —— 只会报 PASS 的检查，自己就是下一个假信号。
+
+**批量结果本身也带噪声**：本轮跑批把 `distill._direct_type` 里一个
+`"reflection"` → `"REFLECTION"` 的**等价**变异体报成了 killed，单跑
+（`mutmut run <key>`，几秒钟）才发现它其实 survived。同一份代码连跑，
+结论能差十几个。所以那个百分数只能当趋势看；要下结论（尤其是
+"这条到底有没有测试盯着"）必须单跑那一个 key。分数在一两个百分点内
+抖动时，先怀疑噪声，别急着找原因。
 
 **一条运维经验**：mutmut 默认并行（`max_children = os.cpu_count()`）。如果在容器
 或沙箱里因为临时目录问题需要加 `--basetemp`，**必须同时加 `--max-children 1`**
