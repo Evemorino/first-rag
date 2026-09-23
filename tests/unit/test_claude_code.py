@@ -33,6 +33,12 @@ def _error_result_event(ts, stderr):
         {"type": "tool_result", "is_error": True, "content": stderr}]})
 
 
+def _ok_result_event(ts, stdout):
+    """工具跑通了：没有 is_error 的 tool_result —— 挣扎在这里结束。"""
+    return _event(ts, "user", message={"content": [
+        {"type": "tool_result", "content": stdout}]})
+
+
 @pytest.fixture
 def sessions_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(claude_code, "SESSIONS_DIR", tmp_path)
@@ -111,14 +117,45 @@ def test_parse_extracts_messages_and_errors(sessions_dir):
 
 
 def test_parse_counts_struggle_rounds(sessions_dir):
+    """连续三次工具失败 = 3 轮挣扎 —— 哪怕中间夹着 assistant 叙述。
+
+    真实的 Claude Code 会话里 user / assistant 是严格交替的：每次工具报错都以
+    assistant 的一条消息回应，再来下一次 tool_result。所以"报错→助手→报错"就是
+    三次连续失败；只有工具**成功**才算挣扎结束（与 codex 插件同一套语义，那边
+    在模块 docstring 里明写了「assistant 叙述不打断失败连击」）。
+
+    之前这条用的是三条报错紧挨着的夹具 —— 那种形状真实日志里不会出现，所以它
+    一直是绿的，而实现里「见到 assistant 就归零」的 bug 让真数据永远只算出 1，
+    config 里的 struggle_rounds=3 阈值等于没有（FR-008 失效）。
+    """
     path = write_session(sessions_dir, "proj-a", "s1.jsonl", [
+        _user_event(TS, "为什么 upsert 报 409"),
         _error_result_event(TS, "fail 1"),
+        _assistant_event(TS, "维度可能不一致，我换个写法"),
         _error_result_event(TS, "fail 2"),
+        _assistant_event(TS, "再看看 collection 配置"),
         _error_result_event(TS, "fail 3"),
     ])
     from src.plugins import SourceRef
     mat = claude_code.parse(SourceRef(source="claude_code", ref=str(path), day=DAY))
     assert mat.meta["struggle_rounds"] == 3
+
+
+def test_a_successful_tool_result_ends_the_struggle(sessions_dir):
+    """工具成功一次 = 连击归零，之后的失败从 1 重新数。
+
+    不这么做的话，一个「先失败、修好了、后面又失败一次」的长会话会被算成连续
+    挣扎，把已经解决的问题记成没解决 —— 而挣扎轮次是要喂蒸馏去判"重复踩坑"的。
+    """
+    path = write_session(sessions_dir, "proj-a", "s1.jsonl", [
+        _error_result_event(TS, "fail 1"),
+        _ok_result_event(TS, "all good"),
+        _error_result_event(TS, "fail 2"),
+    ])
+    from src.plugins import SourceRef
+    mat = claude_code.parse(SourceRef(source="claude_code", ref=str(path), day=DAY))
+    assert mat.meta["struggle_rounds"] == 1
+    assert mat.meta["error_count"] == 2
 
 
 def test_parse_skips_other_days(sessions_dir):

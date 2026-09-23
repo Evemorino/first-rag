@@ -85,13 +85,20 @@ def parse(ref: SourceRef) -> RawMaterial:
 
             entry_type = event.get("type")
             if entry_type == "user":
-                new_mats, had_error = _user_materials(event, ref, ts, meta_base, error_run)
-                error_run = error_run + 1 if had_error else 0
+                new_mats, had_error, saw_ok = _user_materials(
+                    event, ref, ts, meta_base, error_run)
+                # 只有工具真的跑通才算挣扎结束；一次失败的 user 回合把连击 +1，
+                # 纯文本的用户发言则是中性的（换个话题不等于把坑填了）。
+                if had_error:
+                    error_run += 1
+                elif saw_ok:
+                    error_run = 0
                 materials.extend(new_mats)
             elif entry_type == "assistant":
                 materials.extend(
                     _assistant_materials(event, ref, ts, meta_base))
-                error_run = 0
+                # 助手叙述不打断失败连击：真实会话里每次工具报错后面必然跟着一条
+                # assistant 消息，在这里归零等于把 struggle_rounds 永远压成 1。
             elif entry_type in ("tool_result", "toolUseResult"):
                 if _is_error(event):
                     error_run += 1
@@ -105,13 +112,17 @@ def parse(ref: SourceRef) -> RawMaterial:
 def _user_materials(event, ref, ts, meta_base, error_run: int):
     """User turns; tool_result blocks with is_error become kind='error'.
 
-    Returns (materials, had_error) so the caller can track consecutive
-    error runs (struggle evidence, FR-008).
+    Returns (materials, had_error, saw_ok) so the caller can track consecutive
+    error runs (struggle evidence, FR-008): `had_error` on a failed tool round,
+    `saw_ok` when a tool_result came back clean — the only thing that ends a
+    struggle. A plain user message is neither, so it neither extends nor ends
+    the run.
     """
     message = event.get("message", {})
     content = message.get("content")
     out: list[RawMaterial] = []
     had_error = False
+    saw_ok = False
     if isinstance(content, str) and content.strip():
         out.append(RawMaterial(source="claude_code", ref=ref.ref, ts=ts,
                                kind="message", text=content,
@@ -124,11 +135,13 @@ def _user_materials(event, ref, ts, meta_base, error_run: int):
                     source="claude_code", ref=ref.ref, ts=ts, kind="error",
                     text=_truncate(_block_text(block.get("content"))),
                     meta={**meta_base, "struggle_rounds": error_run + 1}))
+            elif block.get("type") == "tool_result":
+                saw_ok = True
             elif block.get("type") == "text" and block.get("text", "").strip():
                 out.append(RawMaterial(source="claude_code", ref=ref.ref, ts=ts,
                                        kind="message", text=block["text"],
                                        meta=dict(meta_base)))
-    return out, had_error
+    return out, had_error, saw_ok
 
 
 def _block_text(content) -> str:

@@ -105,7 +105,13 @@ def _block_text(content) -> str:
 
 
 def _classify(event: dict) -> tuple[str, str]:
-    """Return (kind, text) for one wire event: message / error / ''."""
+    """Return (kind, text) for one wire event: error / user / assistant / ''.
+
+    user 与 assistant 必须分开：连续失败轮次只在「人重新发了一句话」时归零，
+    助手的叙述是每次报错之后的必然产物，拿它当结束信号等于永远只数到 1
+    （FR-008 的 struggle_rounds 阈值就是这么废掉的）。与 claude_code / codex 同一
+    条语义。wire 里没有 tool 结果事件，所以这是能用的最强信号。
+    """
     etype = event.get("type")
 
     if etype == "error" or event.get("is_error") or event.get("level") == "error":
@@ -119,11 +125,11 @@ def _classify(event: dict) -> tuple[str, str]:
         text = _block_text(event.get("content")) or str(
             event.get("text") or "")
         if text.strip():
-            return "message", text.strip()
+            return role, text.strip()
 
     # {type: user_message / assistant_message, text}
     if etype in ("user_message", "assistant_message") and event.get("text"):
-        return "message", str(event["text"]).strip()
+        return etype.removesuffix("_message"), str(event["text"]).strip()
 
     return "", ""
 
@@ -160,9 +166,10 @@ def parse(ref: SourceRef) -> RawMaterial:
                 if first_ts is None:
                     first_ts = ts
                 kind, text = _classify(event)
-                if kind == "message":
+                if kind in ("user", "assistant"):
                     parts.append(text)
-                    error_run = 0
+                    if kind == "user":
+                        error_run = 0  # 人重新开口：这一轮挣扎过去了
                 elif kind == "error":
                     error_count += 1
                     error_run += 1

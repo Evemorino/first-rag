@@ -108,6 +108,47 @@ def test_parse_collects_errors_and_struggle(sessions_dir):
     assert "tool crashed" in mat.text
 
 
+def test_assistant_narration_does_not_break_a_struggle_run(sessions_dir):
+    """助手自己的叙述不算"挣扎结束"——它是每次报错之后的必然产物。
+
+    真实会话里 error 与 assistant 发言交替出现，所以把 assistant 也当结束信号，
+    struggle_rounds 永远只数到 1，config 里的 struggle_rounds=3 等于没有
+    （FR-008 失效）。与 claude_code / codex 同一条语义：助手叙述不打断失败连击。
+
+    kimi 的 wire 词表里没有 tool 结果事件（`_classify` 只认得出 message / error），
+    所以这里能用的结束信号只有「人重新发了一句话」——上面那条测试守的就是它。
+    """
+    d = write_session(sessions_dir, "wd_a", "session_1", [
+        error_event(TS, "upsert 409"),
+        msg(TS, "assistant", "维度可能不一致，我换个写法"),
+        error_event(TS, "upsert 409 again"),
+        msg(TS, "assistant", "再看看 collection 配置"),
+        error_event(TS, "upsert 409 第三次"),
+    ])
+
+    mat = kimi_code.parse(SourceRef(source="kimi_code", ref=str(d), day=DAY))
+
+    assert mat.meta["struggle_rounds"] == 3
+    assert mat.meta["error_count"] == 3
+
+
+def test_typed_assistant_message_does_not_break_a_struggle_run(sessions_dir):
+    """Shape C（{type: assistant_message}）也得同样处理：它走 _classify 的另一条分支。
+
+    只修 role 那条分支的话，用 {type: *_message} 记录会话的产品照样塌成 1，
+    而这两种形状在同一个文件里混着出现（见 test_parse_extracts_all_message_shapes）。
+    """
+    d = write_session(sessions_dir, "wd_a", "session_1", [
+        error_event(TS, "tool crashed"),
+        typed_msg(TS, "assistant_message", "让我换个思路"),
+        error_event(TS, "tool crashed again"),
+    ])
+
+    mat = kimi_code.parse(SourceRef(source="kimi_code", ref=str(d), day=DAY))
+
+    assert mat.meta["struggle_rounds"] == 2
+
+
 def test_parse_skips_other_days(sessions_dir):
     d = write_session(sessions_dir, "wd_a", "session_1", [
         msg(OLD_TS, "user", "old day"),
