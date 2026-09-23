@@ -31,8 +31,11 @@ ask:
 	$(PY) -m src.ask Q="$(Q)" $(ARGS)
 
 # --- Quick note -> notes/inbox.md (FR-004) ---
+#   e.g. make log m="踩了个坑：..." t=error
+# t 必须转发：漏了它快记照样写进 inbox，只是类型静默变成 reflection
+# （collect 读不到 marker 时的默认值），而 README 一直写着 t=error 能用。
 log:
-	$(PY) -m src.log m="$(m)"
+	$(PY) -m src.log m="$(m)" $(if $(t),t=$(t))
 
 # --- Interactive scope selection (FR-005) ---
 scope:

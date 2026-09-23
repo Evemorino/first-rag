@@ -86,8 +86,9 @@ pytest_add_cli_args = ["-x", "-q", "--no-header", "-p", "no:cacheprovider"]
 # make mutation 直接挂掉，而 mutmut 不在 pre-commit 里，没有任何门禁会发现）。
 # .pre-commit-config.yaml 同理：test_gate_selftest 要拿它核对"用例表和真实配置
 # 有没有各走各的"，而测试文件里的 REPO_ROOT 在副本里指向 mutants/ 自己。
+# Makefile 同理：test_makefile_forwarding 要读它核对"参数有没有真的转发给 CLI"。
 # 同一个坑踩了两次，记住：**任何测试要读仓库根的文件，都必须进 also_copy**。
-also_copy = ["config/", "scripts/", ".pre-commit-config.yaml"]
+also_copy = ["config/", "scripts/", ".pre-commit-config.yaml", "Makefile"]
 do_not_mutate = ["src/plugins/_template/*"]
 # 按源码行排除，两类：
 # 1. 纯文案行 —— 拼给 LLM 的 JSON 字段名、示例文本、日志格式串。改这些不会

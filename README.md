@@ -81,6 +81,20 @@ uv run python scripts/gate_selftest.py --why    # 打印每个用例为什么这
   跟踪的文件"就判失败。真实仓库一直是绿的，全靠 `coverage.xml` 在 `.gitignore`
   里；把这行删掉，每次提交都会红。
 
+### Makefile 那一跳也要有测试
+
+`tests/unit/test_makefile_forwarding.py` 核对"README 里写着可用的参数，
+Makefile 目标真的转发给了 CLI"。加它是因为真踩过：`make log m="…" t=error`
+的配方只写了 `m="$(m)"`，`t` 被 make 静默吞掉 —— 快记照样写进 inbox，只是
+类型退回 reflection（collect 读不到 marker 时的默认值）。README 一直写着
+`t=error` 能用，`test_log.py` 也一直绿，因为它测的是
+`log.main(["log", "m=…", "t=…"])`，**直接跳过了 make 这一层**。
+
+同一个坑（"两层之间那一跳没人管"）本仓库踩过不止一次：变异提醒漏过两次、
+`also_copy` 漏文件两次。判据是：**只要有一层是"转发/搬运"性质的，就得有一个
+断言盯着它把东西搬到位** —— 这类层自己不会算错，只会漏，而漏的时候下游
+拿到的是"少了一个参数"的合法输入，一路绿到底。
+
 ### 分层与规模
 
 ```sh
