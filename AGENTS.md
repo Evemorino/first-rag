@@ -91,8 +91,11 @@ specs/001-learning-memory-rag/  # spec/plan/data-model/contracts/tasks
   产品源目录（`~/.claude`、`~/.codex`、`~/.kimi-code`、`~/.trae-cn`）严格只读。
   由 `scripts/write_boundary_check.py` 守：产品根写入是硬法（登记也豁免不了），
   而 `src/` 里**每个**写入点都必须在 `WRITE_SITES` 里登记「允许写到哪 + 为什么」，
-  兜底同样是拒绝。多出来的第三个写入根（`config/scope.json`）就明列在登记表中，
-  而不是装作看不见。`make boundary-list` 看全表。
+  兜底同样是拒绝。唯一的枚举例外是 `config/scope.json`（宪法 v2.1.0 写死：只此
+  一路径、只由人显式调用的 `make scope` 触发、全库只此一处）——要加第二处得先修宪，
+  不许只往登记表里添一行。"只由人触发"这条也是机械的：登记项上的 `only_from`
+  钉住了调用方（当前 `src/scope.py:main`），别的模块 import 进来写就是红。
+  `make boundary-list` 看全表。
 - **密钥**：只从 `.env`（gitignore）读，不进代码/配置模板/提交物；蒸馏前正则脱敏。
   提交前由 pre-commit 的 `detect-private-key` 自动再拦一道。
 - **幂等**：条目 ID = uuid5(source|date|content_hash)；任何重跑不产生重复数据/边。

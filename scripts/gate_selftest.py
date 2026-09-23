@@ -225,6 +225,25 @@ CASES: list[Case] = [
          why="宪法 V 标了 NON-NEGOTIABLE 却没有机械门禁的那条，而且违规不可恢复"
              "—— 产品目录里是用户真实的会话记录。形状很稳定：路径来自 Path.home()"
              "，动作是个写调用。登记豁免救不了它（硬法），所以这条红了就只能改代码"),
+    Case("write-boundary", "绕过登记好的配置写入点",
+         {"src/scope.py": '"""The sanctioned config writer."""\n'
+                          "from pathlib import Path\n"
+                          "\n"
+                          "\n"
+                          "def save(matrix: dict) -> Path:\n"
+                          "    path = Path('config') / 'scope.json'\n"
+                          '    path.write_text("{}", encoding="utf-8")\n'
+                          "    return path\n",
+          "src/sneaky.py": '"""A pipeline that reaches past the CLI."""\n'
+                           "from src.scope import save as write_scope\n"
+                           "\n"
+                           "\n"
+                           "def run() -> None:\n"
+                           "    write_scope({})\n"},
+         "red",
+         why="登记表钉的是「写入点在 src/scope.py:save」，光这样挡不住别的模块 "
+             "import 这个函数去写 config/ —— 写入点名字都没变，门禁照样绿。"
+             "这条用例走的是带 as 别名的导入形状，最容易漏认的一种"),
     Case("pytest", "测试挂了",
          {"tests/test_boom.py": BOOM_TEST}, "red",
          "一个必失败的断言；这条挂了等于提交门禁的底座没了"),

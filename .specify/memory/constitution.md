@@ -47,11 +47,25 @@ MUST 保持薄入口：只做参数校验与调用核心层，MUST NOT 含业务
 密钥 MUST NOT 出现在代码、配置模板或任何提交物中，只从环境读取。
 data/、notes/、.env MUST 永久处于 gitignore。
 
-验证手段：git status 出现在上述三处之外的新文件即违宪；
-对源目录，采集前后其 mtime 与内容指纹 MUST 不变。
+唯一例外（封闭枚举，不许多出第二项）：`config/scope.json`。它是采集范围的
+唯一事实来源，`make scope` 只是它的编辑器（PRD FR-005），且 `config/` 与
+`data/`、`notes/` 并列构成换机器时要带走的三样东西（PRD NFR-007），因此它
+属于"用户在改自己的配置"而不是"运行时在产出数据"。例外 MUST 同时满足：
+① 只覆盖这一个路径，写别的 config/ 文件仍属违宪；② 只由人显式调用的入口
+触发，自动链路（sync / collect / distill / ingest / ask / redistill）MUST NOT
+写 config/；③ 全库 MUST 只有这一处写入点，且 MUST 在
+`scripts/write_boundary_check.py` 的登记表里带理由登记在案——想再加第二处，
+MUST 先来修本条，而不是往登记表里添一行。
+
+验证手段：git status 出现在上述范围之外的新文件即违宪
+（`config/scope.json` 是预期内的，它本该随仓库走）；对源目录，采集前后其
+mtime 与内容指纹 MUST 不变。例外那一条的调用方 MUST 由登记表的 `only_from`
+钉住（当前为 `src/scope.py:main`）—— 只登记写入点挡不住别的模块 import 这个
+函数来写 config/，那种绕过写入点名字都没变。
 
 理由：隐私与数据边界不存在"本特性例外"；未来任何功能
-（web 界面、导出、MCP）都必须在这堵墙内进行。
+（web 界面、导出、MCP）都必须在这堵墙内进行。开这一个口子而不开第二个，
+是因为它已经被钉在一个可调查的登记项上——墙仍然是可验证的。
 
 ### VI. 技术克制与可逆（Restraint and Reversibility）
 
@@ -111,4 +125,21 @@ MUST NOT 为尚未到来的需求引入技术或组件。任何引入的组件 M
 - 所有审查环节（plan 阶段 Constitution Check、最终一致性审查）
   MUST 对照本文件逐条检查，而非凭记忆引用。
 
-**Version**: 2.0.0 | **Ratified**: 2026-09-18 | **Last Amended**: 2026-09-20
+## Sync Impact Report
+
+- **2.1.0（2026-09-23）** — MINOR：V 新增一条封闭枚举的写入例外 `config/scope.json`。
+  - 触发原因：新上的写入边界门禁（`scripts/write_boundary_check.py`）扫出
+    `src/scope.py:save` 是全库唯一落在 data/、notes/ 之外的写入点，而按 V 旧措辞
+    （"任何其他位置的写入均属违宪" + "git status 出现在三处之外的新文件即违宪"）
+    它就是违宪的 —— 违宪的还是一个已被 PRD FR-005/NFR-007 明确要求的功能。
+  - 影响面：V 的正文与"验证手段"；配套改动为门禁登记表注释、AGENTS.md 硬约束
+    条目、README 门禁说明。代码路径未变（写还是写 config/scope.json）。
+  - 被显式拒绝的两条替代路：把文件挪进 data/（会让采集范围选择变成机器局部，
+    与 NFR-007 的迁移集冲突，且把"配置"与"产物"混进同一目录）；把它加进
+    gitignore（V 的"验证手段"会以 git status 判违宪，且丢失跨机器一致性）。
+  - 后续一致性检查：`make boundary-list` 应恰好显示 5 个登记项，其中
+    `src/scope.py:save` 是唯一 target 不在 data//notes/ 的；出现第二个即违反本条。
+- **2.0.0** — 原则重定义与扩充（见 git 历史）。
+- **1.x** — 初版批准。
+
+**Version**: 2.1.0 | **Ratified**: 2026-09-18 | **Last Amended**: 2026-09-23

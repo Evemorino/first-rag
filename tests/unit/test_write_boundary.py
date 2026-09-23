@@ -219,3 +219,68 @@ def test_a_registration_for_an_absent_file_is_not_stale(tmp_path, monkeypatch):
         Path("src"), registry={"src/gone.py:save": wbc.Site("data/", "文件不在树里")})
 
     assert problems == []
+
+
+SCOPE_MODULE = '''\
+"""The picker: this repo's only sanctioned config writer."""
+
+from pathlib import Path
+
+
+def save(matrix: dict) -> Path:
+    path = Path("config") / "scope.json"
+    path.write_text("{}", encoding="utf-8")
+    return path
+
+
+def main() -> int:
+    save({})
+    return 0
+'''
+
+SYNC_REACHES_IN = '''\
+"""A pipeline that quietly borrows the config writer."""
+
+from src.scope import save
+
+
+def run() -> None:
+    save({"tools": {}})
+'''
+
+
+BYPASS_REGISTRY = {
+    "src/scope.py:save": wbc.Site(
+        "config/scope.json", "宪法 V 的唯一例外",
+        only_from=("src/scope.py:main",)),
+}
+
+
+def test_a_sanctioned_writer_called_from_elsewhere_is_a_bypass(
+        tmp_path, monkeypatch):
+    """宪法 V 第②条（"只由人显式调用的入口触发"）的可执行版本。
+
+    登记表钉住的是「写入点在 src/scope.py:save」；光这样挡不住 sync.py 直接
+    import 这个函数来写 config/ —— 写入点还是那个已登记的名字，门禁照样绿。
+    所以要查调用方：谁调它，调用的位置必须在 only_from 里。
+    """
+    make_tree(tmp_path, monkeypatch, {
+        "src/scope.py": SCOPE_MODULE,
+        "src/sync.py": SYNC_REACHES_IN,
+    })
+
+    problems = wbc.scan(Path("src"), registry=BYPASS_REGISTRY)
+
+    assert [(p.rule, p.file, p.site) for p in problems] == [
+        ("writer-bypassed", "src/sync.py", "src/scope.py:save")]
+
+
+def test_the_sanctioned_caller_may_still_call_it(tmp_path, monkeypatch):
+    """对照组：只有 scope.py 自己在 main 里调，就该放行。
+
+    只测"抓到绕过"的话，一个逢调用必报的实现也能过 —— 那这条门禁会变成
+    拆掉 scope 功能的原因之一，而不是保护它的手段。
+    """
+    make_tree(tmp_path, monkeypatch, {"src/scope.py": SCOPE_MODULE})
+
+    assert wbc.scan(Path("src"), registry=BYPASS_REGISTRY) == []

@@ -32,10 +32,16 @@ WRITE_MODULE_FUNCTIONS = {"os": {"remove", "rename", "replace"},
 
 @dataclass(frozen=True)
 class Site:
-    """一个登记过的写入点：它实际会碰到哪里，以及凭什么允许。"""
+    """一个登记过的写入点：它实际会碰到哪里，以及凭什么允许。
+
+    `only_from` = 允许调用它的位置（`文件:函数`）。写进 data/、notes/ 的那些
+    本来就在墙内，留空即不限制调用方；只有宪法 V 那条例外必须钉住调用方，
+    否则"登记表钉住写入点"挡不住别人 import 这个函数去写 config/。
+    """
 
     target: str
     why: str
+    only_from: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -59,6 +65,8 @@ def scan(root: Path, registry: dict | None = None) -> list[Problem]:
     problems: list[Problem] = []
     sites: set[str] = set()
     files: set[str] = set()
+    trees: dict[str, ast.AST] = {}
+    scopes: dict[str, list] = {}
     for path in sorted(root.rglob("*.py")):
         rel = path.as_posix()
         files.add(rel)
@@ -67,6 +75,8 @@ def scan(root: Path, registry: dict | None = None) -> list[Problem]:
         except (OSError, SyntaxError) as e:
             problems.append(Problem(rel, 0, "unreadable", f"读不了/解析不了：{e}"))
             continue
+        trees[rel] = tree
+        scopes[rel] = _scopes(tree, rel)
         found = write_sites(tree, rel)
         sites.update(site for site, _ in found)
         products = _product_violations(rel, found, tree)
@@ -76,6 +86,7 @@ def scan(root: Path, registry: dict | None = None) -> list[Problem]:
         hard = {p.site for p in products}
         problems.extend(p for p in _unregistered(found, entries)
                         if p.site not in hard)
+    problems.extend(_bypassed(trees, scopes, entries))
     problems.extend(_stale(sites, files, entries))
     return problems
 
@@ -179,21 +190,34 @@ def _product_violations(rel: str, found: list[tuple[str, ast.Call]],
     return problems
 
 
-def _write_calls(node: ast.AST) -> list[ast.Call]:
-    """`node` 子树里的写调用，但不穿过嵌套函数。
+def _walk_calls(node: ast.AST, keep) -> list[ast.Call]:
+    """`node` 子树里满足 keep 的调用，但不穿过嵌套函数。
 
-    不穿过去有两个原因：写入点归属到**最近**的函数才有用（`save_snapshot`
-    和它内部的东西不是一回事），以及穿过去会双计 —— 模块级作用域会把每个函数
-    里的写调用再收一遍。
+    不穿过去有两个原因：调用点归属到**最近**的函数才有用，以及穿过去会双计
+    —— 模块级作用域会把每个函数里的调用再收一遍（第一版就栽在这儿，把
+    main 里的调用记成了 "-"）。
     """
     out: list[ast.Call] = []
     for child in ast.iter_child_nodes(node):
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             continue  # 它自己会作为一个作用域被扫到
-        if isinstance(child, ast.Call) and _is_write(child):
+        if isinstance(child, ast.Call) and keep(child):
             out.append(child)
-        out.extend(_write_calls(child))
+        out.extend(_walk_calls(child, keep))
     return out
+
+
+def _write_calls(node: ast.AST) -> list[ast.Call]:
+    """`node` 子树里的写调用（不穿过嵌套函数）。"""
+    return _walk_calls(node, _is_write)
+
+
+def _scopes(tree: ast.AST, rel: str) -> list[tuple[str, ast.AST]]:
+    """一棵文件里的作用域：模块级（记作 "-"）+ 每个函数。"""
+    scopes: list[tuple[str, ast.AST]] = [("-", tree)]
+    scopes += [(n.name, n) for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    return scopes
 
 
 def write_sites(tree: ast.AST, rel: str) -> list[tuple[str, ast.Call]]:
@@ -202,11 +226,8 @@ def write_sites(tree: ast.AST, rel: str) -> list[tuple[str, ast.Call]]:
     键里不放行号：行号会随着上面加一行注释就漂掉，登记表会变成天天要改的
     摆设 —— 那就没人改了。
     """
-    scopes: list[tuple[str, ast.AST]] = [("-", tree)]
-    scopes += [(n.name, n) for n in ast.walk(tree)
-               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
     return [(f"{rel}:{name}", call)
-            for name, scope in scopes for call in _write_calls(scope)]
+            for name, scope in _scopes(tree, rel) for call in _write_calls(scope)]
 
 
 def _describe(expr: ast.expr) -> str:
@@ -225,8 +246,9 @@ def _unregistered(found: list[tuple[str, ast.Call]],
         rel = site.split(":")[0]
         problems.append(Problem(
             file=rel, lineno=call.lineno, rule="unregistered", site=site,
-            detail="未登记的写入点。宪法 V 只认 data/ 与 notes/ 两个写入根，"
-                   f"要放开就在 WRITE_SITES 里登记「{site}」，写清允许写到哪、"
+            detail="未登记的写入点。宪法 V 只认 data/ 与 notes/ 两个写入根"
+                   "（唯一枚举例外是 config/scope.json，v2.1.0，且不许有第二处），"
+                   f"要放开就在 WRITE_SITES 里登记「{site}」并写清允许写到哪、"
                    "为什么"))
     return problems
 
@@ -246,13 +268,15 @@ WRITE_SITES = {
     "src/sync.py:cleanup_raw": Site(
         "data/raw/<day>.json（删除）",
         "FR-022 到期清理；只碰 raw/，永不碰库内条目（AC-008）"),
-    # 第三个写入根。宪法 V 那句「运行时只写 data/、notes/」并没有把它算进去，
-    # 但 FR-005 的 `make scope` 就是要落一个 config/scope.json —— 交互式选择
-    # 的结果总得有个地方存。这里显式登记而不是装作看不见：例外要有理由，
-    # 没理由的例外过半年就成了「反正一直这样」。
+    # 宪法 V 在 2.1.0 里开了一条**封闭枚举**的例外：config/scope.json。
+    # 它是采集范围的唯一事实来源（PRD FR-005），且 config/ 属于换机器要带走的
+    # 三样东西之一（PRD NFR-007）。V 同时写死了三条：只覆盖这一个路径、只由人
+    # 显式调用触发、全库只能有这一处 —— 想添第二处 MUST 先修宪，而不是往这张表
+    # 里加一行。这张表就是那条宪法话的可执行版本。
     "src/scope.py:save": Site(
         "config/scope.json",
-        "FR-005 采集范围选择的持久化；唯一一处写到 data//notes/ 之外"),
+        "宪法 V 的唯一例外（v2.1.0）：FR-005 范围选择的持久化",
+        only_from=("src/scope.py:main",)),
 }
 
 
@@ -262,8 +286,109 @@ def print_registry() -> None:
     for site, entry in sorted(WRITE_SITES.items()):
         print(f"  {site:<28} -> {entry.target}")
         print(f"  {'':<28}    {entry.why}")
+        if entry.only_from:
+            print(f"  {'':<28}    只许被这些位置调用：{'、'.join(entry.only_from)}")
     print("\n硬法（登记也不能豁免）：产品源目录 ~/.claude、~/.codex、"
           "~/.kimi-code、~/.trae-cn 严格只读（宪法 V）")
+
+
+def _names_bound_to(tree: ast.AST, module: str, func: str,
+                    is_owner: bool) -> tuple[set[str], set[str]]:
+    """本文件里指向 `src.<module>.<func>` 的名字：裸函数名 与 模块别名。
+
+    认三种现实里会出现的写法：`from src.scope import save`（可带 as）、
+    `from src import scope` / `import src.scope`、以及 owner 文件自己内部
+    直接调 `save(...)`。相对导入（`from .scope import save`）也顺手认。
+    """
+    bare: set[str] = set()
+    mods: set[str] = set()
+    if is_owner:
+        bare.add(func)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            pkg = node.module or ""
+            if node.level and not node.module:      # from . import scope
+                if module in [a.name for a in node.names]:
+                    mods.update(a.asname or a.name for a in node.names
+                                if a.name == module)
+            elif pkg == f"src.{module}":            # from src.scope import save
+                bare.update(a.asname or a.name for a in node.names
+                            if a.name == func)
+            elif pkg == "src" or (node.level and pkg == ""):
+                mods.update(a.asname or a.name for a in node.names
+                            if a.name == module)
+            elif pkg.endswith(f".{module}"):        # from .scope import save
+                bare.update(a.asname or a.name for a in node.names
+                            if a.name == func)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == f"src.{module}":
+                    mods.add(alias.asname or module)
+                elif alias.name == "src":
+                    mods.add(alias.asname or "src")
+    return bare, mods
+
+
+def _calls_a_function(tree: ast.AST, rel: str, module: str, func: str,
+                      scopes: list[tuple[str, ast.AST]]
+                      ) -> list[tuple[str, ast.Call]]:
+    """返回 `文件:函数` → 调用节点，凡看起来在调 src.<module>.<func> 的。"""
+    bare, mods = _names_bound_to(tree, module, func, rel == f"src/{module}.py")
+    hits: list[tuple[str, ast.Call]] = []
+
+    def is_target(node: ast.Call) -> bool:
+        callee = node.func
+        if isinstance(callee, ast.Name):
+            return callee.id in bare
+        if isinstance(callee, ast.Attribute) and callee.attr == func:
+            head = callee.value
+            return isinstance(head, ast.Name) and head.id in mods
+        return False
+
+    for name, scope in scopes:
+        for node in _walk_calls(scope, is_target):
+            hits.append((f"{rel}:{name}", node))
+    return hits
+
+
+def _module_of(site: str) -> tuple[str, str] | None:
+    """`src/scope.py:save` -> ("scope", "save")；不在 src/ 下或没有函数则 None。"""
+    rel, _, func = site.partition(":")
+    if not rel.startswith("src/") or not rel.endswith(".py") or not func:
+        return None
+    return rel[len("src/"):-len(".py")], func
+
+
+def _bypassed(trees: dict[str, ast.AST], scopes: dict[str, list],
+              registry: dict) -> list[Problem]:
+    """登记了 only_from 的写入点，被名单外的位置调用 = 绕过。
+
+    没有这一步，"登记表钉住写入点"只守得住「谁写了文件」，守不住宪法 V
+    第②条「只由人显式调用的入口触发」—— 别的模块 import 同一个函数来写
+    config/，写入点名字都没变，门禁照样绿。
+    """
+    problems: list[Problem] = []
+    for site, entry in sorted(registry.items()):
+        allowed = set(entry.only_from)
+        if not allowed:
+            continue
+        parsed = _module_of(site)
+        if not parsed:
+            continue
+        module, func = parsed
+        for rel, tree in trees.items():
+            for caller, node in _calls_a_function(
+                    tree, rel, module, func, scopes[rel]):
+                if caller in allowed or caller == site:
+                    continue
+                problems.append(Problem(
+                    file=rel, lineno=node.lineno, rule="writer-bypassed",
+                    site=site,
+                    detail=f"被豁免的写入点「{site}」只允许从 "
+                           f"{'、'.join(sorted(allowed))} 调用，这里绕过它去写 "
+                           f"{entry.target} 了（宪法 V 例外第②条：只由人显式"
+                           "调用的入口触发）"))
+    return problems
 
 
 def main(argv: list[str] | None = None) -> int:
