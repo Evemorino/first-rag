@@ -7,7 +7,8 @@ PY = uv run --no-sync python
 .PHONY: up down serve sync ask log scope embed-test test redistill
 .PHONY: cov crap crap-observe mutation mutation-selfcheck hooks
 .PHONY: baseline baseline-update orphans orphans-top
-.PHONY: layers layers-list size size-top gate-selftest
+.PHONY: layers layers-list size size-top boundary boundary-list gate-selftest
+.PHONY: hooks hooks-run
 
 # Infrastructure: the only container is Qdrant (PRD §6, constitution VI)
 up:
@@ -78,11 +79,12 @@ orphans-top: cov
 	$(PY) scripts/orphan_check.py --top 10
 
 # --- 结构门禁：毫秒级，只管 src/ ---
-# 分层：import 方向对不对（插件不许互相依赖、不许反向依赖编排层等）
+# 位置与分层：src/ 下每个装着 .py 的目录都必须在 lint_layers 里登记过属于哪一层
+#（没登记 = 报错），再加上 import 方向对不对（插件不许互相依赖、不许反向依赖编排层）
 layers:
 	$(PY) scripts/lint_layers.py
 
-# 打印各层允许 import 什么，以及唯一的例外和它的理由
+# 打印已登记的位置（含理由、每层现有文件数）、各层允许 import 什么、例外及理由
 layers-list:
 	$(PY) scripts/lint_layers.py --list
 
@@ -93,6 +95,15 @@ size:
 # 摸底用：看最长的文件与函数，不判失败
 size-top:
 	$(PY) scripts/size_guard.py --top 10
+
+# 写入边界：运行时只准写 data/ 与 notes/，产品源目录（~/.claude 等）严格只读。
+# 宪法 V 里唯一此前没有机械门禁的那条，而违规不可恢复。
+#   make boundary-list  看登记过的写入点各自碰到哪里、凭什么
+boundary:
+	$(PY) scripts/write_boundary_check.py
+
+boundary-list:
+	$(PY) scripts/write_boundary_check.py --list
 
 # 变异自检：先跑这个，再跑 mutation。
 # 它塞一个已知必死的改动进去，看测试抓不抓得住 —— 抓不住说明工具或断言有问题，
@@ -117,7 +128,7 @@ baseline:
 baseline-update:
 	$(PY) scripts/baseline_check.py --update
 
-# 门禁自检：给 13 个钩子各植入一个已知违规，看它到底红不红；再跑一组
+# 门禁自检：给 14 个钩子各植入一个已知违规，看它到底红不红；再跑一组
 # "干净仓库"对照，确认该放行的时候它也放行。约 10 秒。
 # 什么时候跑：改了 .pre-commit-config.yaml 或任何一个 scripts/*_check|guard|lint 之后。
 # 想确认这把自检本身还灵：把 scripts/lint_layers.py 的 main 开头加一行 `return 0`，
@@ -128,7 +139,7 @@ gate-selftest:
 # --- 提交门禁 ---
 # 装好之后，每次 git commit 会自动跑：文本/密钥检查 → pytest → CRAP。
 # 想临时跳过某次提交：git commit --no-verify（别养成习惯）。
-# 装两步：commit 前那 13 个钩子，外加一个 post-commit 提醒
+# 装两步：commit 前那 14 个钩子，外加一个 post-commit 提醒
 # （提醒"这次改动落在变异覆盖范围内"，它拦不住也拦不了，只能说一声）
 hooks:
 	uv run pre-commit install

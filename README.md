@@ -44,8 +44,8 @@ make serve                             # 按需 API：/health /log /sync /ask
 make hooks        # = uv run pre-commit install
 ```
 
-13 个钩子，按"从便宜到贵"排：大文件/冲突/JSON/YAML/AST → 行尾空白 →
-**密钥扫描** → 分层依赖 → 规模 → pytest → CRAP → 孤儿模块。
+14 个钩子，按"从便宜到贵"排：大文件/冲突/JSON/YAML/AST → 行尾空白 →
+**密钥扫描** → 位置与分层 → 规模 → **写入边界** → pytest → CRAP → 孤儿模块。
 
 - **pytest 挂了会直接停下**（`fail_fast`）—— 否则 CRAP 会拿一份残缺的
   coverage.xml 判门禁，凭空报出一堆不存在的 crappy 函数。CRAP 与孤儿检查
@@ -56,6 +56,17 @@ make hooks        # = uv run pre-commit install
   它必须设 `verbose: true`：pre-commit 对**成功**的钩子默认不打印输出，
   不开的话提醒是看不见的（装完第一次提交就发现了：只显示一行 Passed）。
 - **分层与规模只管 `src/`**；`example/` 是示例代码，豁免质量钩子。
+- **写入边界守的是不可恢复的那条**（`scripts/write_boundary_check.py`）：产品源目录
+  里是真实的会话记录，写坏了补不回来。两级：写到由 `Path.home()` 派生的路径 = 硬违规，
+  登记也不许豁免；`src/` 里每个写调用还必须先登记过（键是 `文件:函数`，不放行号 ——
+  行号会随着上面加一行注释漂掉，登记表就会变成天天要改的摆设，那就没人改了）。
+  登记意味着"停下来想一想这是不是第三种写入根"：目前 `config/scope.json` 就是唯一一个，
+  它明列在表里带理由，而不是混过去。`make boundary-list` 看全表。
+- **同一套门禁在 CI 上再跑一遍**（`.github/workflows/ci.yml`）。pre-commit 挡不住
+  `--no-verify`，也挡不住"换了台机器/另一个 agent 会话没装 hooks"，而本项目经常并行
+  开好几个会话。CI 不新增任何判断标准，只跑那 14 个钩子 + `make gate-selftest` ——
+  后者才是这个文件存在的理由：门禁自己坏了的时候（脚本改错、`files:` 过滤器写宽），
+  本地和 CI 都会一路绿着放行，只有"植入违规看它红不红"能发现。
 - **钩子自己也会坏，而且坏得很安静**。改了 `.pre-commit-config.yaml` 或
   `scripts/` 下任何一个检查脚本之后，跑 `make gate-selftest`（约 10 秒）：
   它给每个钩子植入一个已知违规，断言"必须红"，再拿一个干净仓库断言"必须绿"。
@@ -65,13 +76,26 @@ make hooks        # = uv run pre-commit install
 ### 门禁自检
 
 ```sh
-make gate-selftest                  # 26 个用例：13 个"该红" + 13 个"该绿"
+make gate-selftest                  # 27 个用例：14 个"该红" + 13 个"该绿"
 uv run python scripts/gate_selftest.py --why    # 打印每个用例为什么这样设计
 ```
 
 只测"该红时不红"是不够的 —— 一个永远报错的钩子也能通过。所以每个钩子都配了
-一个干净仓库的对照组。自检本身也可以被验证：把 `scripts/lint_layers.py` 的
-`main()` 开头塞一行 `return 0`，自检必须报"期望红 实际绿"并退出 1。
+一个干净仓库的对照组。`lint-layers` 有两条"该红"：一条测跨层 import，一条测
+未登记的新目录 —— 同一个钩子上两条同期望的用例，临时仓库目录名要带上用例标题
+的短哈希，否则第二条会把第一条覆盖掉。
+
+自检本身也可以被验证，而且两个方向都要验：把 `scripts/lint_layers.py` 的
+`main()` 开头塞一行 `return 0`，自检必须报"期望红 实际绿"并退出 1；反过来把
+`layer_of()` 的兜底从 `return None` 改回 `return "编排层"`（旧的 fail-open
+写法），**只有**"新目录没登记就免检"那一条该红，另两条必须还是绿的 —— 只红
+一条，才说明这条用例钉住的是它自己那个行为，而不是"反正门禁坏了"。
+
+canary 自己也会骗你，而且骗法很隐蔽：新加的"跨插件规则不依赖名单"那条用例，
+第一版夹具写的是 `zed` import `trae` —— 而 `trae` 本来就在被删掉的那份名单里，
+所以它在"退回手工名单"的 canary 下**照样绿**。用名单里的名字测"不依赖名单"，
+等于什么都没测。判据是：夹具要落在**旧实现会放行、新实现必须拦住**的那一侧，
+否则这条用例只是把现状复述了一遍。
 
 自检过程顺带挖出了两条从来没写在任何地方的事实：
 
@@ -98,8 +122,8 @@ Makefile 目标真的转发给了 CLI"。加它是因为真踩过：`make log m=
 ### 分层与规模
 
 ```sh
-make layers        # 分层依赖：src/ 的 import 方向对不对
-make layers-list   # 打印各层允许 import 什么
+make layers        # 位置与分层：src/ 的目录登记 + import 方向
+make layers-list   # 打印已登记的位置（含理由、每层文件数）与各层允许 import 什么
 make size          # 规模：src/ 单文件 ≤300 SLOC、单函数 ≤80 行
 make size-top      # 摸底：看最长的文件与函数
 ```
@@ -109,6 +133,43 @@ make size-top      # 摸底：看最长的文件与函数
 `ark_client` / `distill_prompt`）不许依赖编排层；`config` 不依赖任何 src。
 写下时零违规 —— 加它是防半年后有人图省事破坏依赖方向。例外只有一条且写明
 理由：`distill_prompt → src.collect`（只为取 `DayRaw`）。
+
+**位置登记**（同一个脚本）：`src/` 下每个装着 `.py` 的目录都必须在
+`DIRECTORIES` 里登记过属于哪一层 —— **没登记 = 报错，不给默认值**。
+
+兜底给"拒绝"而不是"放行"，是这里唯一重要的设计。改之前 `layer_of()` 的最后
+一行是 `return "编排层"`，而编排层的 `ALLOWED` 是 `None`（不限制），于是新建
+一个目录就等于**默认拿到最大权限**：
+
+- `src/retrieval/rerank.py` —— 旧行为：编排层 → 不限制；现在：报错，目录没登记
+- `src/api2/handler.py` —— 旧行为：编排层 → 不限制；现在：报错，目录没登记
+- `src/sync.py` —— 已登记，行为不变（平铺在 `src/` 根 = 编排层）
+- `src/plugins/新插件/` —— 插件层，不用登记：插件是开放式扩展点，"它属于哪一层"
+  在这里已经有答案了，真正要守的是"插件之间不许互相依赖"
+
+门禁对"已经存在、已经被人 review 过的旧结构"严格、对"还没人想过的新结构"放行，
+而后者恰恰是唯一需要门禁的时刻 —— 这是典型的 fail-open。行业里做得好的方案
+兜底一律是拒绝：Go 的 `internal/`（目录名是编译期约束）、Bazel `visibility`
+（默认 private，官方最佳实践原话是"避免把 `default_visibility` 设为 public……
+随着代码库增长，无意中创建公共目标的风险会上升"）、Nx 的 project tag（官方文档
+一句"Projects without any tags cannot depend on any other projects"）、tach
+（允许放行，但必须在 `tach.toml` 里显式写 `unchecked: true`）。共同点不是"用哪个
+工具"，而是**规则覆盖全体、默认拒绝、例外显式写出来**。
+
+登记单位是**目录**而不是文件："新增一个文件"是给已有结构添砖，"新增一个目录"
+是在引入一个新的架构单元 —— 只有后者值得先停下来想一步。核心层与 `config` 是
+按文件登记的，因为层的边界穿过了 `src/` 这个目录本身。
+
+"插件不许互相依赖"这条也顺手改掉了手工名单：原来靠一份 `PLUGIN_SUBPACKAGES`
+枚举，新插件忘了加进去规则就静默失效；现在判据是"这个文件自己属于哪个插件"，
+覆盖全体、不需要维护。同样是枚举"已知的"和覆盖"全体的"的区别。
+
+`EXCEPTIONS` 里的例外也会被反向核对：文件还在、但已经不再 import 那个模块时
+直接报错 —— 失效的例外会误导后面读的人，以为这里还有约束。
+
+这些不变量由 `tests/unit/test_lint_layers.py` 钉住（兜底必须是 `None`、已登记
+路径不受影响、跨插件规则不依赖名单、例外不能是死的、退出码）。它比钩子快得多，
+而且报错时**指名道姓说是哪个文件** —— 钩子的报错要等一次 commit 才看得到。
 
 **规模**（`scripts/size_guard.py`）用 SLOC 而非物理行数，免得罚注释写得好的
 文件；只管 `src/`，因为测试函数天然长。注意它只是底线：

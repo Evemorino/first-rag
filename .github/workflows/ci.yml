@@ -1,0 +1,62 @@
+# 提交门禁的第二层。
+#
+# 这里跑的**不是**另一套检查，而是同一套：`.pre-commit-config.yaml` 那 15 个钩子
+# （14 拦人 + 1 个 post-commit 提醒），外加 `scripts/gate_selftest.py`（门禁自检）。
+# 分工是——
+#
+#   pre-commit：本地，快，但 `--no-verify` 就能绕，而且换台机器 / 换一个
+#               agent 会话没跑过 `make hooks` 就等于没有。本项目经常并行开
+#               好几个会话，这不是假想敌。
+#   CI：       绕不过去。它不生产任何新的判断标准，只保证「你说装了门禁，
+#               那它在干净环境里确实会红」。
+#
+# 最后那条 gate-selftest 才是这个文件存在的重点：门禁自己坏了的时候（脚本改错、
+# files 过滤器写宽、钩子配置没生效），pre-commit 会一路绿着放行，而 CI 也一样绿
+# —— 除非有人去证明"植入违规它真的会红"。这一层把那个证明搬到了机器上。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 版本按 mise.toml 里已经钉好的那两个来（python 3.13 / uv 0.29.1）。
+      # 不用第三方 setup-uv action：这里少一个能悄悄漂移的外部依赖，就少一次
+      # 「CI 红的原因跟你的代码无关」。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install "uv==0.29.1"
+
+      # 钩子的 entry 是 `uv run --no-sync ...` —— 它假定虚拟环境已经在那儿，
+      # 所以必须先 sync 一次，否则每个钩子都死在找不到解释器上。
+      - run: uv sync --group dev
+
+      # Qdrant 直接用仓库里那份 docker-compose.yml：集成测试要连 :6333
+      # （连不上是 skip，不是 fail —— 但那就等于 CI 上没人跑过 AC-003 的幂等）。
+      # 在 CI 里再抄一份 services: 就是第二份配置真相，早晚和 compose 分叉。
+      - run: docker compose up -d
+      - name: Wait for Qdrant
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:6333/ >/dev/null 2>&1; then
+              echo "Qdrant is up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "Qdrant 没在 60s 内起来" >&2
+          docker compose logs --tail 40 >&2
+          exit 1
+
+      - name: 跑全部提交门禁（15 个钩子）
+        run: uv run pre-commit run --all-files
+
+      - name: 门禁自检 —— 植入违规，证明每个钩子还会红
+        run: uv run python scripts/gate_selftest.py

@@ -27,7 +27,7 @@ repos:
       # --- 毫秒级：只管 src/ 的结构约束 ---
       # --no-sync：环境本来就是常驻的，没必要每次提交都重新构建一遍包
       - id: lint-layers
-        name: 分层依赖（src/ 的 import 方向）
+        name: 位置与分层（src/ 目录登记 + import 方向）
         entry: uv run --no-sync python scripts/lint_layers.py
         language: system
         pass_filenames: false
@@ -36,6 +36,17 @@ repos:
       - id: size-guard
         name: 规模门禁（文件 ≤300 SLOC、函数 ≤80 行）
         entry: uv run --no-sync python scripts/size_guard.py
+        language: system
+        pass_filenames: false
+        files: ^src/.*\.py$
+
+      # 宪法 V 里唯一没人守的那条：产品源目录（~/.claude、~/.codex、
+      # ~/.kimi-code、~/.trae-cn）严格只读。写坏了是用户真实的会话记录，
+      # 不可恢复 —— 而它的违规形状很稳定（一个写调用 + 路径落在产品根），
+      # AST 静态扫就够，所以放在这一层，不需要 .env 也不需要真跑一次 sync。
+      - id: write-boundary
+        name: 写入边界（运行时只写 data/ 与 notes/，产品源目录只读）
+        entry: uv run --no-sync python scripts/write_boundary_check.py
         language: system
         pass_filenames: false
         files: ^src/.*\.py$

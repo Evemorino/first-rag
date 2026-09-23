@@ -33,6 +33,7 @@ uv 要向上找到 pyproject.toml 才能用项目的 .venv，丢到 /tmp 里就�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import shutil
 import subprocess
@@ -147,6 +148,7 @@ CLEAN_HOOKS = [
     "detect-private-key",
     "lint-layers",
     "size-guard",
+    "write-boundary",
     "pytest",
     "crap",
     "orphans",
@@ -166,7 +168,12 @@ class Case:
 
     @property
     def slug(self) -> str:
-        return f"{self.hook}-{self.expect}"
+        # 带上 title 的短哈希：同一个钩子可以有多条同期望的用例（lint-layers
+        # 就有两条「必须红」——一条测跨层 import，一条测未登记的新目录）。
+        # 只用 hook-expect 当目录名的话，它们会共用同一个临时仓库，第二条把
+        # 第一条覆盖掉；--keep 时更糟，只能看到最后一条。
+        digest = hashlib.sha1(self.title.encode("utf-8")).hexdigest()[:6]
+        return f"{self.hook}-{self.expect}-{digest}"
 
 
 CASES: list[Case] = [
@@ -196,9 +203,28 @@ CASES: list[Case] = [
     Case("lint-layers", "插件 import 编排层",
          {"src/plugins/demo.py": "from src import distill\n"}, "red",
          "插件只允许 src.plugins 与 src.config，反向依赖会让改一处全库回归"),
+    Case("lint-layers", "新目录没登记就免检",
+         {"src/retrieval/rerank.py": "x = 1\n"}, "red",
+         why="位置登记的兜底必须是「拒绝」，不能是「编排层」—— 编排层的 ALLOWED "
+             "是 None（不限制），把最宽松的那一层当兜底，等于每个新目录默认免检，"
+             "而「新建目录」恰恰是唯一需要门禁的时刻。夹具故意用一个零 import 的"
+             "文件：它登记过的话必然绿，所以红只能来自位置。这条钉的就是那个默认"
+             "值 —— 把 layer_of() 的兜底改回 return \"编排层\"，它必须变绿"),
     Case("size-guard", "单文件超 300 SLOC",
          {"src/big.py": BIG_SRC}, "red",
          "320 行代码 > 300 SLOC 上限（用 SLOC 是为了不罚注释写得多的文件）"),
+    Case("write-boundary", "往产品源目录写东西",
+         {"src/plugins/demo.py": '"""A collector that forgot it is read-only."""\n'
+                                 "from pathlib import Path\n"
+                                 "OUT = Path.home() / '.codex' / 'sessions'\n"
+                                 "\n"
+                                 "\n"
+                                 "def tidy() -> None:\n"
+                                 '    (OUT / "rollout.jsonl").write_text("boom")\n'},
+         "red",
+         why="宪法 V 标了 NON-NEGOTIABLE 却没有机械门禁的那条，而且违规不可恢复"
+             "—— 产品目录里是用户真实的会话记录。形状很稳定：路径来自 Path.home()"
+             "，动作是个写调用。登记豁免救不了它（硬法），所以这条红了就只能改代码"),
     Case("pytest", "测试挂了",
          {"tests/test_boom.py": BOOM_TEST}, "red",
          "一个必失败的断言；这条挂了等于提交门禁的底座没了"),

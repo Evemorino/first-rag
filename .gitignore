@@ -21,6 +21,9 @@ mutants/
 
 # AI / agent working directory (session memory, not project source)
 .workbuddy-ai/
+# 工具运行时状态（hook 的会话续跑标记）。它每次运行都会变，进版本库只会让
+# 每次 git status 都脏一行，而且别人 pull 到的是你本机的会话状态 —— 纯噪声。
+.mimosa/
 
 # macOS
 .DS_Store

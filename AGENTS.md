@@ -40,10 +40,11 @@ make crap          # CRAP 指标（复杂度 × 未覆盖度），≥30 视为 c
 make orphans       # 孤儿模块：一行测试都没跑过的 src/ 模块（CRAP 的盲区）
 make layers        # 分层依赖：src/ 的 import 方向（--list 看规则）
 make size          # 规模：src/ 单文件 ≤300 SLOC、单函数 ≤80 行
+make boundary      # 写入边界：产品源目录只读 + src/ 写入点必须登记（--list 看登记）
 make mutation-selfcheck  # 已知必死改动的自检：抓不住就别信变异分数
 make mutation      # 变异测试（mutmut），默认只打核心链路（内部先跑自检，末尾核对文档基线）
 make baseline      # 只核对不重跑：README 里的分数还准不准 + 哪些文件比上次跑批新
-make hooks         # 装 pre-commit：每次 commit 自动跑 13 个钩子
+make hooks         # 装 pre-commit：每次 commit 自动跑 14 个钩子（CI 上还有一层）
 make gate-selftest # 门禁自检：给每个钩子植入违规，看它到底红不红（约 10 秒）
 ```
 
@@ -70,11 +71,12 @@ src/
   api/app.py       # FastAPI 薄壳（路由只做校验与调用）
 scripts/crap.py    # CRAP 计算器：radon 复杂度 × coverage 覆盖率
 scripts/orphan_check.py  # 孤儿模块：找出零覆盖的 src/ 模块（CRAP 抓不到）
-scripts/lint_layers.py   # 分层依赖门禁：AST 查 src/ 的 import 方向
+scripts/lint_layers.py   # 位置与分层门禁：src/ 新目录必须登记 + AST 查 import 方向
 scripts/size_guard.py    # 规模门禁：src/ 文件 SLOC 与函数行数上限
+scripts/write_boundary_check.py  # 写入边界门禁：产品目录只读 + src/ 写入点必须登记
 scripts/mutation_selfcheck.py  # 变异自检 canary（改坏源码看测试红不红）
 scripts/baseline_check.py      # 文档基线核对：mutants/ 真实结果 vs README 写死的数字
-scripts/gate_selftest.py       # 门禁自检：给 13 个钩子各植入一个违规，断言它真会红
+scripts/gate_selftest.py       # 门禁自检：给 14 个钩子各植入一个违规，断言它真会红
 tests/mutmut_compat.py  # mutmut 3.x 对 `src.` 包名的兼容补丁（见文件头）
 config/            # schema.json（类型/rubric/检索/trae 映射/保留期）、repos.txt、scope.json
 data/              # qdrant/ 与 raw/（gitignore；备份=复制本目录）
@@ -87,11 +89,18 @@ specs/001-learning-memory-rag/  # spec/plan/data-model/contracts/tasks
 
 - **写入边界（NON-NEGOTIABLE）**：运行时只写 `data/`、`notes/`；临时产物用系统 tmp；
   产品源目录（`~/.claude`、`~/.codex`、`~/.kimi-code`、`~/.trae-cn`）严格只读。
+  由 `scripts/write_boundary_check.py` 守：产品根写入是硬法（登记也豁免不了），
+  而 `src/` 里**每个**写入点都必须在 `WRITE_SITES` 里登记「允许写到哪 + 为什么」，
+  兜底同样是拒绝。多出来的第三个写入根（`config/scope.json`）就明列在登记表中，
+  而不是装作看不见。`make boundary-list` 看全表。
 - **密钥**：只从 `.env`（gitignore）读，不进代码/配置模板/提交物；蒸馏前正则脱敏。
   提交前由 pre-commit 的 `detect-private-key` 自动再拦一道。
 - **幂等**：条目 ID = uuid5(source|date|content_hash)；任何重跑不产生重复数据/边。
 - **扩展走配置或插件**：新类型改 `config/schema.json`；新采集源复制 `src/plugins/_template/`。
   两者都不许改核心代码。
+- **文件位置**：`src/` 下新开**目录**必须在 `scripts/lint_layers.py` 的 `DIRECTORIES`
+  里登记（属于哪一层 + 理由），没登记直接报错 —— 兜底是"拒绝"不是"编排层"。
+  只是加模块就平铺进已登记的目录，别顺手建新目录。
 - **★ 模块**：`similarity.py` 的关联边（T027）与对齐规则（T037）默认用户手写，
   AI 仅 review；已有逐任务授权记录见 tasks.md 头部说明。
 - **Git**：不主动 commit/push，时机由用户决定。
