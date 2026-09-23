@@ -60,6 +60,21 @@ def _payload(entry: Entry) -> dict[str, object]:
     }
 
 
+# Ark embeddings 单次 input 上限 10 条，超了直接 400 InvalidParameter
+# （第一次真跑 make sync 撞出来的：11 条条目 → "max 10, got 11"）。
+# 这个限制本属于客户端契约，但 ark_client 是宪法 VII 的手写核心模块，
+# 所以分批放在调用方；将来若把上限挪进 ark_client，记得同时删掉这里。
+EMBED_BATCH = 10
+
+
+def _embed_all(texts: list[str]) -> list[list[float]]:
+    """按 provider 上限分批嵌入，返回值顺序与输入严格一致。"""
+    vectors: list[list[float]] = []
+    for start in range(0, len(texts), EMBED_BATCH):
+        vectors.extend(embed(texts[start:start + EMBED_BATCH]))
+    return vectors
+
+
 def upsert(entries: list[Entry]) -> Report:
     """批量嵌入 Entry 并幂等 upsert 到 Qdrant。"""
     if not entries:
@@ -70,7 +85,7 @@ def upsert(entries: list[Entry]) -> Report:
             raise ValueError("entry text must not be empty")
 
     # 先批量生成全部向量，避免逐条调用 Ark API。
-    vectors = embed([entry.text for entry in entries])
+    vectors = _embed_all([entry.text for entry in entries])
 
     # 同一批内如果出现相同 source/date/text，只保留第一个点。
     # 不同 metadata 不应导致同一身份被写成两个 point。

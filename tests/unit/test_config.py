@@ -3,11 +3,15 @@
 Fixtures write to system tmp only (constitution V).
 """
 
+import ast
 import json
+from pathlib import Path
 
 import pytest
 
 from src import config
+
+SRC_DIR = Path(__file__).resolve().parents[2] / "src"
 
 
 def _make_schema(tmp_path, mutate=None):
@@ -34,6 +38,35 @@ def test_load_env_reads_fixture(tmp_path, monkeypatch):
     monkeypatch.delenv("ARK_API_KEY", raising=False)
     config.load_env()
     assert config.env("ARK_API_KEY") == "test-key-123"
+
+
+def test_every_cli_entry_bootstraps_env():
+    """src/ 里每个 `main()` 都必须先 `config.load_env()`。
+
+    真实事故：`config.env()` 只读 os.environ，而 load_env() 只有 ark_client /
+    api / embed_test 调过 —— sync、ask、redistill 三个入口都没调，distill 又在
+    构造任何 client 之前就读 CHAT_MODEL，于是 `make sync` 在有 LLM 素材的日子
+    必然 ConfigError。全套测试当时是绿的，因为 test_distill 直接 monkeypatch
+    掉了 config.env 本身，等于把这条路径整段绕开。
+
+    规则做成"所有 main 一律 bootstrap"而不是"需要 env 的那些才要"：后者要靠
+    人判断谁需要，而这个判断会随重构失效 —— 又因为 load_env() 对缺失的 .env
+    无害幂等，一律要求不比挑着要求贵。
+    """
+    missing = []
+    for path in sorted(SRC_DIR.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or node.name != "main":
+                continue
+            bootstrapped = any(
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "load_env"
+                for call in ast.walk(node))
+            if not bootstrapped:
+                missing.append(path.as_posix())
+    assert missing == [], f"这些 CLI 入口没 bootstrap 环境: {missing}"
 
 
 def test_env_missing_raises_actionable_error(monkeypatch):

@@ -271,6 +271,9 @@ def _parse_args(argv: list[str]) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
+    config.load_env()
+    # CLI 入口自己 bootstrap 环境：config.env() 只读 os.environ，忘了这一步
+    # 就会在第一次读环境变量时炸掉（test_config 守着这条）。
     logging.basicConfig(
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     opts = _parse_args(sys.argv if argv is None else argv)

@@ -133,6 +133,7 @@ def _format_diff(diff: dict) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    config.load_env()
     logging.basicConfig(
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     argv = sys.argv if argv is None else argv

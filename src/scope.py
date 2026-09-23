@@ -107,6 +107,7 @@ def save(matrix: dict) -> Path:
 
 
 def main(argv: list[str] | None = None, *, stdin_lines: list[str] | None = None) -> int:
+    config.load_env()
     del argv  # 目前无位置参数
     matrix = build_matrix()
     source = iter(stdin_lines) if stdin_lines is not None else None

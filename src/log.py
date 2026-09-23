@@ -30,6 +30,7 @@ def log(text: str, type_: str | None = None) -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
+    config.load_env()
     argv = sys.argv if argv is None else argv
     text = None
     type_ = None

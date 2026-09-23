@@ -94,6 +94,37 @@ def test_upsert_empty_entries_returns_zero_without_network(fake_qdrant, fake_emb
     assert fake_embed == []
 
 
+def test_upsert_splits_embed_calls_at_the_provider_limit(fake_qdrant, monkeypatch):
+    """Ark 的 embeddings 单次 input 上限是 10 条，超了直接 400。
+
+    第一次真跑 `make sync` 撞出来的：26 条素材蒸出 11 条条目，ingest 把 11 条
+    一次性交给 embed() → BadRequestError「max 10, got 11」。当时 405 个测试全绿，
+    因为它们用的 fake embed 从不检查批大小。
+
+    自带 fake 而不用 fake_embed fixture：那个 fake 每个批次内部重新从 0 编号，
+    第二批的第一条会和第一批第一条拿到同一个向量，novelty 过滤会把它当重复丢掉
+    —— 断言就测不到我想测的东西了。
+    """
+    calls: list[list[str]] = []
+    counter = iter(range(1000))
+
+    def embed(texts):
+        calls.append(list(texts))
+        return [[float(next(counter)), 1.0] for _ in texts]
+
+    monkeypatch.setattr(ingest, "embed", embed)
+    entries = [make_entry(text=f"lesson number {i}") for i in range(11)]
+
+    report = ingest.upsert(entries)
+
+    assert [len(call) for call in calls] == [10, 1]
+    assert [t for call in calls for t in call] == [e.text for e in entries]
+    assert report.upserted == 11
+    # 分批最容易错的是错位：第 i 条必须仍然拿到第 i 个向量
+    points = fake_qdrant.calls[0]["points"]
+    assert [p.vector[0] for p in points] == [float(i) for i in range(11)]
+
+
 def test_upsert_batches_embeds_and_writes_all_payload_fields(fake_qdrant, fake_embed):
     first = make_entry()
     second = make_entry(
