@@ -1,13 +1,23 @@
 """kimi_code plugin: parse ~/.kimi-code/sessions/wd_<ws>/session_<id>/ (raw path).
 
-结构（research.md 实测）：每个会话目录含
-- state.json：cwd / title / createdAt（项目归属与元信息）
-- agents/main/wire.jsonl：事件流
+每个会话目录含 state.json（cwd / title / createdAt）与 agents/main/wire.jsonl
+事件流。事件形态按本机真实数据实测（2026-09-24，11 个会话 / 39206 个事件）：
 
-本机无 kimi-code 真实数据，wire 事件按常见形态容错解析（三种形态
-在 fixture 单测中固化）；时间戳为 UTC，折算 Asia/Shanghai 判定归属日。
-源目录只读（宪法 V）。装了 kimi-code 的机器上应先跑一次真实数据
-冒烟（plugin-contract 的 schema_check 步骤）再信任解析结果。
+- ``turn.prompt``：人说的话在 ``input[]`` 的 ``{type:"text"}`` 块里；``origin.kind``
+  实测有三种——user 358 / task 64（子代理回报）/ skill_activation 4，只有
+  "user" 算人开口（本机 426 条 turn.prompt 的分布）。
+- ``agent.message.appended``：``message.message`` 才是那条消息，``content[]`` 里
+  ``type:"text"`` 是对外文本、``type:"think"`` 是思维链（体量最大，不入素材）。
+  ``role`` 为 tool/user 的是上下文回灌，与"人开口""工具报错"都不同源，跳过。
+- ``context.append_loop_event``：``event.type`` 里 3669 条 ``tool.result``，
+  报错看 ``result.isError``（真实数据 108 条为真）。
+
+时间戳统一是 **int 毫秒**（state.json 的 createdAt 也是），折算 Asia/Shanghai
+判归属日。源目录严格只读（宪法 V）。
+
+这里栽过一次：三套 shape 是照别家产品**猜**的，而真实数据一直在本机，于是
+``_classify`` 认出 0 条、int 毫秒又让归属日永不命中，采集源静默空转、测试全绿。
+闸口是 tests/unit/test_kimi_code.py::test_real_sessions_are_recognised。
 """
 
 from __future__ import annotations
@@ -31,13 +41,25 @@ _TS_KEYS = ("timestamp", "ts", "time", "created_at")
 
 
 def _as_shanghai(value) -> datetime | None:
-    if not isinstance(value, str):
+    """kimi 的时间戳是 int 毫秒 epoch；也接受带时区的 ISO 串。
+
+    单位是契约的一部分：按秒解释会落到 1970 年，按微秒解释会落到 5 万年后，
+    两种都"解析成功"，于是归属日永远不命中、还不报错——正是本模块栽过的坑。
+    """
+    if isinstance(value, bool):
         return None
-    try:
-        return datetime.fromisoformat(
-            value.replace("Z", "+00:00")).astimezone(TZ)
-    except ValueError:
-        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value / 1000, tz=TZ)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(
+                value.replace("Z", "+00:00")).astimezone(TZ)
+        except ValueError:
+            return None
+    return None
 
 
 def _event_ts(event: dict) -> datetime | None:
@@ -92,44 +114,59 @@ def _read_state(session_dir: Path) -> dict:
     return state if isinstance(state, dict) else {}
 
 
-def _block_text(content) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "\n".join(
-            block.get("text", "")
-            for block in content
-            if isinstance(block, dict) and block.get("text")
-        )
-    return ""
+def _block_text(blocks, want: str = "text") -> str:
+    """拼出 content/input 里指定类型的文本块；其余（think 思维链）丢掉。
+
+    真实数据里 think 块比 text 块还多，全收进素材既泄露不该外流的思维链，
+    又会把 MAX_SESSION_CHARS 的额度先吃光。
+    """
+    if not isinstance(blocks, list):
+        return ""
+    return "\n".join(
+        str(block["text"])
+        for block in blocks
+        if isinstance(block, dict)
+        and block.get("type") == want and block.get("text")
+    )
 
 
 def _classify(event: dict) -> tuple[str, str]:
-    """Return (kind, text) for one wire event: error / user / assistant / ''.
+    """Return (kind, text) for one wire event: user/assistant/error/ok/''.
 
-    user 与 assistant 必须分开：连续失败轮次只在「人重新发了一句话」时归零，
-    助手的叙述是每次报错之后的必然产物，拿它当结束信号等于永远只数到 1
-    （FR-008 的 struggle_rounds 阈值就是这么废掉的）。与 claude_code / codex 同一
-    条语义。wire 里没有 tool 结果事件，所以这是能用的最强信号。
+    'ok' 表示一次干净的工具成功，它只用来归零失败连击、不进素材。FR-008 的
+    struggle_rounds 数的是"同一问题连续没解决"，所以结束信号只能是**真成功**：
+    助手叙述是每次报错之后的必然产物，人的下一句往往只是"又试一次"，两者都
+    不该打断连击（与 claude_code / codex 同一条语义）。
     """
     etype = event.get("type")
 
-    if etype == "error" or event.get("is_error") or event.get("level") == "error":
-        text = (event.get("message") or event.get("text")
-                or _block_text(event.get("content")) or json.dumps(
-                    event, ensure_ascii=False)[:2000])
-        return "error", f"[error] {str(text)[:2000]}"
+    if etype == "turn.prompt":
+        origin = event.get("origin")
+        if not isinstance(origin, dict) or origin.get("kind") != "user":
+            return "", ""          # task / skill_activation 都不是人开口
+        text = _block_text(event.get("input")).strip()
+        return ("user", text) if text else ("", "")
 
-    role = event.get("role")
-    if role in ("user", "assistant"):
-        text = _block_text(event.get("content")) or str(
-            event.get("text") or "")
-        if text.strip():
-            return role, text.strip()
+    if etype == "agent.message.appended":
+        message = event.get("message")
+        inner = message.get("message") if isinstance(message, dict) else None
+        # role=tool 的回灌与 tool.result 同源，role=user 的回灌与 turn.prompt
+        # 同源，都只取一次：这里只认助手对外说的文本。
+        if not isinstance(inner, dict) or inner.get("role") != "assistant":
+            return "", ""
+        text = _block_text(inner.get("content")).strip()
+        return ("assistant", text) if text else ("", "")
 
-    # {type: user_message / assistant_message, text}
-    if etype in ("user_message", "assistant_message") and event.get("text"):
-        return etype.removesuffix("_message"), str(event["text"]).strip()
+    if etype == "context.append_loop_event":
+        inner = event.get("event")
+        if not isinstance(inner, dict) or inner.get("type") != "tool.result":
+            return "", ""
+        result = inner.get("result")
+        if not isinstance(result, dict):
+            return "", ""
+        if result.get("isError"):
+            return "error", f"[error] {str(result.get('output', ''))[:2000]}"
+        return "ok", ""
 
     return "", ""
 
@@ -168,13 +205,13 @@ def parse(ref: SourceRef) -> RawMaterial:
                 kind, text = _classify(event)
                 if kind in ("user", "assistant"):
                     parts.append(text)
-                    if kind == "user":
-                        error_run = 0  # 人重新开口：这一轮挣扎过去了
                 elif kind == "error":
                     error_count += 1
                     error_run += 1
                     struggle = max(struggle, error_run)
                     parts.append(text)
+                elif kind == "ok":
+                    error_run = 0  # 工具真成功：这一轮挣扎到这儿结束了
 
     if first_ts is None:
         first_ts = datetime.combine(ref.day, datetime.min.time(), tzinfo=TZ)
