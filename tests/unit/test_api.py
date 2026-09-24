@@ -5,6 +5,7 @@
 """
 
 import json
+import logging
 from datetime import date
 
 import pytest
@@ -34,6 +35,43 @@ def test_health_reports_components(client, monkeypatch):
     body = response.json()
     assert body["qdrant"] is True
     assert "ARK_API_KEY" in body["env"]
+
+
+def test_health_probes_qdrant_only_once(client, monkeypatch):
+    """探测两次要付两次代价：Qdrant 挂掉时每次 2s 超时，日志也重复一条。"""
+    calls = []
+    monkeypatch.setattr(app_module, "_qdrant_ok",
+                        lambda: calls.append(1) or True)
+    monkeypatch.setattr(app_module.config, "load_env", lambda: None)
+    for key in ("ARK_API_KEY", "ARK_BASE_URL", "EMBED_MODEL", "CHAT_MODEL"):
+        monkeypatch.setenv(key, "x")
+
+    assert client.get("/health").status_code == 200
+
+    assert len(calls) == 1
+
+
+def test_qdrant_ok_logs_why_it_failed(monkeypatch, caplog):
+    """返回 False 是契约，但"为什么不可用"不能一并咽掉。
+
+    /health 是排查入口，只回一个 `qdrant: false` 等于让用户自己猜。
+    断言钉在 WARNING：uvicorn 不跑 CLI 的 basicConfig，root 停在
+    默认 WARNING——debug 级写在这里等于没写。
+    """
+    import qdrant_client
+
+    def boom(*a, **k):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(qdrant_client, "QdrantClient", boom)
+
+    with caplog.at_level(logging.WARNING, logger="src.api.app"):
+        assert app_module._qdrant_ok() is False
+
+    records = [r for r in caplog.records if "connection refused" in r.getMessage()]
+    assert records, "失败原因没有留下任何记录"
+    assert all(r.levelno >= logging.WARNING for r in records), \
+        "级别低于 WARNING 时在 uvicorn 下不可见"
 
 
 def test_log_validates_and_calls_core(client, monkeypatch):
@@ -74,6 +112,24 @@ def test_sync_rejects_when_already_running(client):
     _sync_state["running"] = False
 
 
+def test_sync_failure_is_logged(monkeypatch, caplog):
+    """后台线程里的失败，只写进 /sync/status；没人轮询就彻底没了。
+
+    状态面板那条出口保留（它是对外契约），但服务端也得留一份。
+    """
+    def boom(*a, **k):
+        raise RuntimeError("qdrant 没起")
+
+    monkeypatch.setattr(app_module.sync, "run", boom)
+
+    with caplog.at_level(logging.ERROR, logger="src.api.app"):
+        app_module._run_sync(None)
+
+    assert "qdrant 没起" in _sync_state["error"]          # 出口照旧
+    assert any(r.exc_info and "qdrant 没起" in str(r.exc_info[1])
+               for r in caplog.records)
+
+
 def test_ask_returns_answer_with_citations(client, monkeypatch):
     citation = Citation(id="i", date="2026-09-18", type="error",
                         text="boom", source="claude_code",
@@ -102,6 +158,23 @@ def test_ask_translates_failure_to_502(client, monkeypatch):
     monkeypatch.setattr(app_module.ask, "query", boom)
 
     assert client.get("/ask", params={"q": "x"}).status_code == 502
+
+
+def test_ask_failure_is_logged_server_side(client, monkeypatch, caplog):
+    """502 之外还必须在服务端留下 traceback。
+
+    HTTPException 被 FastAPI 的异常处理器接住，不会进 uvicorn 的错误日志；
+    没有这一行，没人在终端盯着的时候报错就彻底查不到。
+    """
+    def boom(*a, **k):
+        raise RuntimeError("ark down")
+    monkeypatch.setattr(app_module.ask, "query", boom)
+
+    with caplog.at_level(logging.ERROR, logger="src.api.app"):
+        assert client.get("/ask", params={"q": "x"}).status_code == 502
+
+    assert any(r.exc_info and "ark down" in str(r.exc_info[1])
+               for r in caplog.records)
 
 
 # --- GET /ask/stream（SSE）---
@@ -176,13 +249,35 @@ def test_ask_stream_reports_generation_failure_as_an_event(client, monkeypatch):
     assert "ark 半路断了" in json.loads(events[-1][1])["message"]
 
 
-def test_ask_stream_translates_retrieval_failure_to_502(client, monkeypatch):
+def test_ask_stream_generation_failure_is_logged(client, monkeypatch, caplog):
+    """生成中途的失败只以 SSE 事件送出：客户端不读，现场就彻底蒸发。"""
+    def broken_chunks():
+        yield "部分回答"
+        raise RuntimeError("ark 半路断了")
+
+    monkeypatch.setattr(
+        app_module.ask, "query_stream",
+        lambda q, **kw: ask_module.StreamedAnswer(
+            question=q, citations=[], expanded=[], chunks=broken_chunks()))
+
+    with caplog.at_level(logging.ERROR, logger="src.api.app"):
+        client.get("/ask/stream", params={"q": "x"})
+
+    assert any(r.exc_info and "ark 半路断了" in str(r.exc_info[1])
+               for r in caplog.records)
+
+
+def test_ask_stream_translates_retrieval_failure_to_502(client, monkeypatch, caplog):
     """检索阶段就失败（还没开始流）时必须给正常的 502，而不是空流。"""
     def boom(*a, **k):
         raise RuntimeError("ark down")
     monkeypatch.setattr(app_module.ask, "query_stream", boom)
 
-    assert client.get("/ask/stream", params={"q": "x"}).status_code == 502
+    with caplog.at_level(logging.ERROR, logger="src.api.app"):
+        assert client.get("/ask/stream", params={"q": "x"}).status_code == 502
+
+    assert any(r.exc_info and "ark down" in str(r.exc_info[1])
+               for r in caplog.records)
 
 
 def test_ask_stream_requires_q(client):

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from collections.abc import Iterator
 from dataclasses import asdict
@@ -23,6 +24,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from src import ask, config, log, sync
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="first-rag", version="0.1.0")
 
@@ -53,7 +56,14 @@ def _qdrant_ok() -> bool:
         QdrantClient(url=config.QDRANT_URL, trust_env=False,
                      timeout=2).get_collections()
         return True
-    except Exception:  # noqa: BLE001 — 健康检查：任何失败都算不可用
+    except Exception as exc:  # noqa: BLE001 — 健康检查：任何失败都算不可用
+        # 返回 False 是契约，但"为什么"得留下：/health 是排查入口，
+        # 只回一个 qdrant: false 等于让用户自己猜。
+        # 用 WARNING 而非 debug：uvicorn 不跑 CLI 那几处 basicConfig，
+        # root 停在默认 WARNING，debug 一次都不会显示。这是个按需工具，
+        # 一次健康检查一条日志，不算刷屏。
+        logger.warning("qdrant health probe failed: %s: %s",
+                       type(exc).__name__, exc)
         return False
 
 
@@ -63,9 +73,10 @@ def health() -> dict:
     import os
 
     env_status = {key: bool(os.environ.get(key)) for key in _ENV_KEYS}
-    ok = _qdrant_ok() and all(env_status.values())
+    qdrant = _qdrant_ok()
+    ok = qdrant and all(env_status.values())
     return {"status": "ok" if ok else "degraded",
-            "qdrant": _qdrant_ok(), "env": env_status}
+            "qdrant": qdrant, "env": env_status}
 
 
 @app.post("/log")
@@ -83,6 +94,9 @@ def _run_sync(day: date_type | None) -> None:
         with _state_lock:
             _sync_state["last"] = summary
     except Exception as exc:  # noqa: BLE001 — 状态面板要展示失败原因
+        # 状态面板是对外出口，但后台线程里没人轮询 /sync/status 时
+        # 这次失败就等于没发生——服务端自己再留一份。
+        logger.exception("sync failed")
         with _state_lock:
             _sync_state["error"] = f"{type(exc).__name__}: {exc}"
     finally:
@@ -118,6 +132,9 @@ def get_ask(
         answer = ask.query(q, type=type, project=project,
                            since=since, until=until, expand=expand)
     except Exception as exc:  # noqa: BLE001 — 入口只转译为 502 + 引导
+        # HTTPException 会被 FastAPI 的异常处理器接住，不会进 uvicorn 的
+        # 错误日志——不在这里落一条，没人在终端盯着时就查不到现场。
+        logger.exception("ask failed")
         raise HTTPException(
             502, f"ask failed: {exc}; check `make up` (Qdrant) and .env"
         ) from exc
@@ -148,6 +165,8 @@ def _stream_events(streamed: ask.StreamedAnswer) -> Iterator[str]:
         for chunk in streamed.chunks:
             yield _sse("chunk", {"text": chunk})
     except Exception as exc:  # noqa: BLE001 — 见 docstring：只能转成事件
+        # 这条失败只以 SSE 事件送出，客户端不读现场就没了，先落日志。
+        logger.exception("ask stream generation failed")
         yield _sse("error", {"message": f"{type(exc).__name__}: {exc}"})
         return
     yield _sse("done", {})
@@ -167,6 +186,7 @@ def get_ask_stream(
         streamed = ask.query_stream(q, type=type, project=project,
                                    since=since, until=until, expand=expand)
     except Exception as exc:  # noqa: BLE001 — 与 /ask 的 502 文案保持一致
+        logger.exception("ask stream retrieval failed")
         raise HTTPException(
             502, f"ask failed: {exc}; check `make up` (Qdrant) and .env"
         ) from exc
