@@ -2,7 +2,7 @@
 
 **Branch**: N/A（项目未 git init，见 spec Assumptions） | **Date**: 2026-09-18 | **Spec**: [spec.md](spec.md)
 
-**Input**: PRD.md v0.4（唯一需求事实来源）；本文件所有需求引用均带 PRD 编号。
+**Input**: PRD.md v0.5（唯一需求事实来源；v0.1 范围已实现完毕，见 PRD §13）；本文件所有需求引用均带 PRD 编号。
 
 ## Summary
 
@@ -16,7 +16,7 @@
 - **Testing**: pytest（unit + integration，integration 需本地 Qdrant 运行）
 - **Target Platform**: macOS 本机，单用户
 - **Project Type**: CLI 工具 + 按需 API 服务（非守护进程，PRD ADR-4）
-- **Performance Goals**: 当日 sync ≤5 分钟（NFR-006）；ask 单次 ≤10 秒
+- **Performance Goals**: 当日 sync ≤5 分钟（NFR-006，2026-09-25 实测 215.9s 达标）；ask 单次 ≤10 秒（2026-09-25 实测 5.9s 达标；流式首字 0.7s）
 - **Constraints**: 写入仅限 `data/`、`notes/`（宪法 V，NON-NEGOTIABLE）；密钥走 `.env`
 - **Scale/Scope**: 单用户；日蒸馏输出 5–10K 字符；条目总量预期千级
 
@@ -76,7 +76,8 @@ first-rag/
 │  ├─ collect.py            # 汇聚各插件 + git + 快记 → DayRaw
 │  ├─ distill.py            # 蒸馏编排（脱敏 → LLM → 类型校验 → 熔断）
 │  ├─ ingest.py             # 嵌入 → upsert → 关联边（调 similarity）
-│  ├─ ask.py                # 检索 + 过滤 + 扩展 + 引用式回答
+│  ├─ ask.py                # 检索 + 过滤 + 引用式回答（含流式）
+│  ├─ ask_expand.py         # 引用构建 + 一跳关联扩展（2026-09-25 size 门禁拆分）
 │  ├─ sync.py               # 串联 collect→distill→ingest + retention 清理
 │  ├─ plugins/
 │  │  ├─ __init__.py        # registry：扫描注册，插件缺失静默跳过

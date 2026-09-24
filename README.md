@@ -31,9 +31,10 @@ make embed-test                        # 真调验证嵌入模型与维度并建
 make sync                              # 晚上跑一次：当日素材 → 蒸馏 → 入库（幂等可重跑）
 make log m="踩了个坑：..." t=error     # 随手快记（未标类型默认 reflection）
 make ask Q="我在 qdrant 上踩过什么坑" --type error --since 7d
+make ask Q="..." --stream              # 流式：边生成边打（首字 ~0.7s，不必等整段）
 make scope                             # 勾选采集哪些工具/项目（写 config/scope.json）
 make redistill D=2026-09-18            # 改完蒸馏标准后对照 diff；加 APPLY=1 整组替换
-make serve                             # 按需 API：/health /log /sync /ask
+make serve                             # 按需 API：/health /log /sync /ask /ask/stream
 ```
 
 ## 质量指标
@@ -194,11 +195,15 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
 ```
 
 - **CRAP** 把复杂度和覆盖率乘在一起：复杂度 23、覆盖 74% 的函数 CRAP 是 32.8，
-  一眼看出该拆还是该补测试。当前基线：函数内语句覆盖 88.5%（口径只算函数体内
-  语句，与 pytest 报的全量行覆盖 90% 不是一回事），142 个函数，均值 4.6，
-  **0 个 crappy**（`config.py:_validate` 按 section 拆成 6 个小函数；
-  `collect._cap` / `redistill._fetch_day_entries` / `claude_code` 错误提取
-  补测试到 100% 覆盖）。
+  一眼看出该拆还是该补测试。当前基线（2026-09-25，548 用例全绿）：函数内语句
+  覆盖 90.7%（口径只算函数体内语句，与 pytest 报的全量行覆盖 92% 不是一回事），
+  162 个函数，均值 4.7，最高 21.1，**0 个 crappy**（`config.py:_validate`
+  按 section 拆成 6 个小函数；`collect._cap` / `redistill._fetch_day_entries` /
+  `claude_code` 错误提取补测试到 100% 覆盖；2026-09-25 从 `ask.py` 拆出的
+  `ask_expand.py` 进来时是 100% 覆盖）。
+  **这串数字是手写的，没有门禁盯着**——`make crap` 只保证"没有 crappy 函数"，
+  不会因为你改了代码而告诉你 README 过期了（变异基线有 `baseline_check.py`，
+  CRAP 没有对应的东西）。数字对不上时以 `make crap` 的输出为准。
 - **孤儿模块**（`scripts/orphan_check.py`）补的是 CRAP 的盲区：CRAP 问的是
   "复杂的代码测够了吗"，问不了"这个模块有人碰过吗"。一个只有简单函数
   （复杂度 1）的模块，哪怕零测试，CRAP 也只有 1×(1-0)³+1 = **2** —— 离 30
@@ -211,8 +216,8 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   （ask / collect / distill）+ 蒸馏装箱（distill_batches，2026-09-24 随分批一起
   纳入；`secret_patterns` 不加 —— 它只有模块级正则常量、零个函数，生不出变异体），
   见 `pyproject.toml` 的 `only_mutate`。
-  当前基线：1414 个变异体
-  被杀死、212 个存活、24 个无测试覆盖，**变异分数 87.0%**。
+  当前基线：1788 个变异体
+  被杀死、189 个存活、14 个无测试覆盖，**变异分数 90.4%**。
 
   往 `only_mutate` 里加模块时要注意：mutmut 只跑已有 `.meta` 里待检查的变异体，
   **新加的文件不会自动 collect**（它连 `collect` 子命令都没有），加完必须

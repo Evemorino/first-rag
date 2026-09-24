@@ -15,6 +15,7 @@ uv run pytest                                # = make test
 uv run python -m src.sync [D=2026-09-18]     # = make sync
 uv run python -m src.log m="想法" [t=idea]   # = make log
 uv run python -m src.ask Q="…" --type error --since 7d   # = make ask
+uv run python -m src.ask Q="…" --stream                  # = make ask --stream（SSE 流式）
 uv run python -m src.scope                   # = make scope
 uv run python -m src.redistill D=2026-09-18 [--apply]    # = make redistill
 uv run python scripts/embed_test.py          # = make embed-test
@@ -30,10 +31,11 @@ make sync          # 当日采集→蒸馏→入库（幂等，可重复跑）
 make sync D=2026-09-18   # 补跑历史日期（AC-009）
 make log m="想法" t=idea  # 手动快记 → notes/inbox.md
 make ask Q="最近学了什么" --type error --since 7d   # 检索问答
+make ask Q="最近学了什么" --stream                 # 流式问答（边生成边打；首字 ~0.7s）
 make scope         # 交互式选择采集范围（写 config/scope.json）
 make redistill D=2026-09-18        # 重蒸馏对照（只看 diff）
 make redistill D=2026-09-18 APPLY=1  # 确认后整组替换
-make serve         # FastAPI 薄壳（:8300，health/log/sync/ask）
+make serve         # FastAPI 薄壳（:8300，health/log/sync/sync-status/ask/ask-stream）
 make test          # pytest（unit + integration）
 make cov           # 行覆盖率 → coverage.xml
 make crap          # CRAP 指标（复杂度 × 未覆盖度），≥30 视为 crappy
@@ -66,7 +68,8 @@ src/
   distill_messages.py    # 追问 LLM 的话术（非法 JSON、未知类型各一次）
   distill_batches.py     # 按 distill.batch_max_chars 把一天切成多批（防单次输出被截断）
   ingest.py        # 嵌入→新颖度去重→Qdrant upsert（幂等）
-  ask.py           # 过滤检索 + 引用式回答 + 关联扩展
+  ask.py           # 过滤检索 + 引用式回答（含流式）
+  ask_expand.py    # 引用构建 + 一跳关联扩展（2026-09-25 从 ask.py 拆出，Citation 定义在此）
   sync.py          # 串联主链路 + .sync.lock + retention 清理
   redistill.py     # 重蒸馏对照编排（diff 先行，确认后替换）
   log.py / scope.py# 快记与范围选择入口
