@@ -67,6 +67,34 @@ def test_read_mutants_without_data(tmp_path):
     assert baseline_check.read_mutants(tmp_path / "nope") is None
 
 
+def test_third_bucket_is_not_one_thing(tmp_path):
+    """第三桶是一堆不同意思：33=无测试，-11=段错误，-24=超时；而 3 也是"杀死"。
+
+    2026-09-24 实测那轮的"24 个无测试覆盖"里，只有 10 条真是 no tests，另 10 条
+    段错误、4 条超时。工具把它们报成同一件事，读者就会拿"补测试"去对待崩溃和
+    超时 —— 分类必须跟着 mutmut 自己的 status_by_exit_code 走，别在本地重抄一套。
+    """
+    mutants = make_mutants(tmp_path, {"ids": [1, 3, 0, 33, -11, -24]})
+
+    counts = baseline_check.read_mutants(mutants)
+    breakdown = baseline_check.unchecked_breakdown(mutants)
+
+    assert (counts.killed, counts.survived, counts.no_tests) == (2, 1, 3)
+    assert breakdown == {"no tests": 1, "segfault": 1, "timeout": 1}
+
+
+def test_main_prints_the_third_buckets_composition(tmp_path, capsys):
+    """报数的时候就得把构成打出来，不能等人自己去看 .meta。"""
+    mutants = make_mutants(tmp_path, {"ids": [1, 0, 33, -11, -11]})
+    doc = make_doc(tmp_path, "1 个变异体被杀死、1 个存活、3 个无测试覆盖，**变异分数 50.0%**")
+
+    baseline_check.main(
+        ["--mutants", str(mutants), "--doc", str(doc)])
+
+    out = capsys.readouterr().out
+    assert "无测试 1" in out and "段错误 2" in out
+
+
 # --- 解析文档 ---
 
 

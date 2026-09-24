@@ -34,15 +34,27 @@ import json
 import os
 import re
 import sys
+from collections import Counter
 from pathlib import Path
+
+from mutmut.stats import status_by_exit_code
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DOC = REPO_ROOT / "README.md"
 MUTANTS_DIR = REPO_ROOT / "mutants"
 
-# exit_code_by_key 里的值：1=测试变红（变异体被杀死），0=测试仍绿（存活）。
-EXIT_KILLED = 1
-EXIT_SURVIVED = 0
+# 判定只按 mutmut 自己的映射走：1 与 3 都是"杀死"，0 是"存活"，
+# 33=无测试覆盖、-11=段错误、-24/36/152/255=超时。
+# 别在本地重抄一套 if code == 1 —— 那正是把三种不同毛病报成一个的原因。
+
+
+def _verdicts(mutants_dir: Path):
+    """逐个产出 (文件, 变异体名, 状态)。没有 mutants/ 时什么都不产。"""
+    metas = sorted(glob.glob(str(mutants_dir / "src" / "*.meta")))
+    for path in metas:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        for mutant, code in data.get("exit_code_by_key", {}).items():
+            yield path, mutant, status_by_exit_code.get(code, f"未知退出码 {code}")
 
 # 文档里的基线那句话，跨行写成：
 #   当前基线：383 个变异体
@@ -91,21 +103,30 @@ class Counts:
 
 def read_mutants(mutants_dir: Path = MUTANTS_DIR) -> Counts | None:
     """从 mutants/src/*.meta 统计实际结果。没有 mutants/ 时返回 None。"""
-    metas = sorted(glob.glob(str(mutants_dir / "src" / "*.meta")))
-    if not metas:
-        return None
-
+    counted = False
     killed = survived = no_tests = 0
-    for path in metas:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-        for code in data.get("exit_code_by_key", {}).values():
-            if code == EXIT_KILLED:
-                killed += 1
-            elif code == EXIT_SURVIVED:
-                survived += 1
-            else:
-                no_tests += 1
-    return Counts(killed, survived, no_tests)
+    for _path, _mutant, status in _verdicts(mutants_dir):
+        counted = True
+        if status == "killed":
+            killed += 1
+        elif status == "survived":
+            survived += 1
+        else:
+            no_tests += 1
+    return Counts(killed, survived, no_tests) if counted else None
+
+
+def unchecked_breakdown(mutants_dir: Path = MUTANTS_DIR) -> Counter:
+    """第三桶（既没杀也没活）到底由什么组成。
+
+    这一桶里混着"真没测试覆盖""跑崩了（段错误）""跑太久（超时）"三种完全不同的
+    毛病，处置方式也不同：第一种要补测试，第二三种要查环境或改排除。合成一个数字
+    报出去，读者就会拿补测试去对付崩溃。
+    """
+    return Counter(
+        status for _p, _m, status in _verdicts(mutants_dir)
+        if status not in ("killed", "survived")
+    )
 
 
 def parse_doc(doc_path: Path = DEFAULT_DOC) -> Counts | None:
@@ -195,6 +216,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if recorded == actual else 1
 
     print(f"实际（mutants/）：{actual}")
+    breakdown = unchecked_breakdown(args.mutants)
+    if breakdown:
+        label = {"no tests": "无测试", "segfault": "段错误", "timeout": "超时",
+                 "skipped": "跳过", "suspicious": "可疑",
+                 "check was interrupted by user": "被中断"}
+        parts = "、".join(
+            f"{label.get(status, status)} {count}"
+            for status, count in sorted(breakdown.items())
+        )
+        print(f"  第三桶 {sum(breakdown.values())} 条的构成：{parts}"
+              "（只有「无测试」是覆盖盲区；崩溃与超时得另查，别拿补测试去对付）")
     if recorded is None:
         print(f"{args.doc.name} 里没找到基线那句话 —— 按当前结果应写成：")
         print(f"  当前基线：{actual.killed} 个变异体被杀死、{actual.survived} 个存活、")
