@@ -265,6 +265,28 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   （git 子进程挂住会让 sync 永久卡死，直接违反 NFR-006）。它记录的 diff 被截断、
   拼不出可替换的锚点，所以没算进上面的 17 条 —— 记在这里，下次重跑时确认。
 
+  **上面 17 条里的 13 条已补测试**（2026-09-23），每条都不是"写完就算"——都用
+  把变异重新打进源码、确认对应测试变红、再还原的方式验证过：
+
+  - 时区（5 条）：`collect.gather` 的 `collected_at`、`collect._dated_note_files`
+    的 `ts`、`distill` 的 `created_at`、`sync.run` 与 `sync.cleanup_raw` 的默认日。
+    后两条需要一个**假装本地是 UTC 的钟**才测得动：本机时区就是 +08，
+    `tz=None` 与 `tz=config.TZ` 在真实钟上给出同一个日期，任何不控钟的断言都
+    区分不了（`_UtcLocalClock` 干的就是这件事）。
+  - 跳过式循环（8 条）：`collect._note_materials` 的两处、`collect.gather` 的
+    discover 失败、`collect._git_materials` 的注释行、`sync.cleanup_raw`、
+    `distill._direct_entries` 的两处、`distill._dedupe_entries`。
+    夹具统一改成**坏数据在前、好数据在后**，并且坏数据必须真能进入那个循环 ——
+    `cleanup_raw` 那条第一版夹具用了 `not-a-date.json`，它连 `????-??-??.json`
+    这个 glob 都不匹配，等于什么都没测；换成 `0000-00-00.json` 才可区分。
+
+  剩下 4 条待补：`sync.run` 调用 `cleanup_raw` 时的 `tz=None`、
+  `collect._iso` 与 `distill_prompt._build_user_prompt` 的 `if x` → `if x or True`
+  （真值兜底被写成恒真）、`collect._repo_commits` 的 `ts=None`。
+  桶里的数字（90/84/18/14/…）要等下一次**全量重建**才会自洽 —— 增量跑会复用
+  旧判定，这正是这次 98% 假数的成因，所以不要用 `make mutation` 的增量结果去
+  核对下面的分类数字。
+
   验证方式说明：分桶是规则化的（比较改动前后的字符串字面量、运算符、参数），
   每个桶都抽了样本**手工把变异打进源码再跑测试**确认（例如
   `collect.x_gather__mutmut_6` 手工植入后 409 个测试全绿 = 真存活；

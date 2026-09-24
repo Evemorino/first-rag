@@ -1,7 +1,7 @@
 """T016 core tests for distillation orchestration."""
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -446,3 +446,61 @@ def test_unknown_note_type_still_produces_a_retrievable_entry(
     entries = distill.distill(day_raw)
 
     assert [e.type for e in entries] == ["reflection"]
+
+
+# --- 变异测试分诊后补的：distill 的时区与两条跳过式循环 ---
+
+
+def test_direct_entries_keep_going_after_unusable_materials():
+    """不可用的素材排在前面时，后面的好素材仍要成型。
+
+    对应存活的 `continue` → `break`（_direct_entries 里有两个 continue：kind 不
+    对、文本为空）。原夹具只放一条 note 素材，两个 continue 一个都触发不了。
+    """
+    day_raw = make_day_raw([
+        make_material("会话消息，不该直接成型", kind="message"),
+        make_material("   ", kind="note", source="manual", ref="inbox.md"),
+        make_material("真正的一条快记", kind="note", source="manual",
+                      ref="inbox.md", meta={"note_type": "idea"}),
+    ])
+
+    entries = distill._direct_entries(
+        day_raw, SCHEMA, "direct+rubric@x",
+        datetime(2026, 9, 20, 12, 0, tzinfo=config.TZ))
+
+    assert [e.text for e in entries] == ["真正的一条快记"]
+    assert entries[0].type == "idea"
+
+
+def test_dedupe_entries_keeps_entries_after_a_duplicate():
+    """重复项夹在中间：`continue` 改成 `break` 会把后面的 B 一起丢掉。
+
+    条目由 _direct_entries 真造出来（而不是手搓 Entry），这样 (source, date,
+    text) 这个去重键是真实形状，测试也不会跟着数据结构漂移。
+    """
+    day_raw = make_day_raw([
+        make_material("A", kind="note", source="manual", ref="inbox.md"),
+        make_material("A", kind="note", source="manual", ref="inbox.md"),
+        make_material("B", kind="note", source="manual", ref="inbox.md"),
+    ])
+    entries = distill._direct_entries(
+        day_raw, SCHEMA, "direct+rubric@x",
+        datetime(2026, 9, 20, 12, 0, tzinfo=config.TZ))
+
+    kept = distill._dedupe_entries(entries)
+
+    assert [e.text for e in kept] == ["A", "B"]
+
+
+def test_direct_path_created_at_is_shanghai_aware(isolated_config):
+    """条目的 created_at 必须带 Asia/Shanghai，不能退化成进程本地时间。
+
+    对应存活的 `datetime.now(tz=config.TZ)` → `tz=None`。本机时区恰好也是 +08，
+    所以不写这条断言的话，"created_at 是 aware 且偏移 +8" 这个 payload 契约
+    （FR-015）从来没被测过。
+    """
+    entries = distill.distill(make_day_raw([
+        make_material("一条快记", kind="note", source="manual", ref="inbox.md"),
+    ]))
+
+    assert entries[0].created_at.utcoffset() == timedelta(hours=8)

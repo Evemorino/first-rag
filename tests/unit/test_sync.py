@@ -6,7 +6,7 @@ so these tests verify orchestration, locking, and retention only.
 
 import json
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -289,3 +289,62 @@ def test_main_reads_sys_argv_when_argv_not_passed(pipeline, monkeypatch):
 
     assert sync.main() == 0
     assert pipeline[0][1] == date(2026, 9, 18)
+
+
+# --- 变异测试分诊后补的：时区与"坏数据在前" ---
+
+
+class _UtcLocalClock:
+    """假装进程本地时区是 UTC 的钟。
+
+    本机时区恰好也是 +08，所以 `datetime.now(tz=config.TZ)` 改成 `tz=None`
+    在真实钟上给出**同一个日期** —— 那 3 个变异体因此天然杀不掉，而 PRD 的
+    "归属日按 Asia/Shanghai 算"其实一条都没被测过。用这个钟把两个时区拆开：
+    2026-09-20T17:00Z 在上海已经是 09-21。
+    """
+
+    INSTANT = datetime(2026, 9, 20, 17, 0, tzinfo=timezone.utc)
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls.INSTANT.astimezone(tz) if tz else cls.INSTANT.replace(tzinfo=None)
+
+
+def test_run_defaults_to_the_shanghai_day_not_the_local_one(pipeline, monkeypatch):
+    """不传日期时，归属日必须由 Asia/Shanghai 决定。"""
+    monkeypatch.setattr(sync, "datetime", _UtcLocalClock)
+
+    assert sync.main(["sync"]) == 0
+    assert pipeline[0][1] == date(2026, 9, 21)
+
+
+def test_cleanup_raw_cutoff_uses_the_shanghai_day(raw_dir, monkeypatch):
+    """retention=0 时，"上海已是明天"就该让昨天的快照过期。
+
+    同一个钟下，naive 本地时间还停在 09-20，于是 `tz=None` 的版本不会删这个文件
+    —— 这条断言测的是 cutoff 到底按哪个时区算，不是测"删了几个"。
+    """
+    monkeypatch.setattr(sync, "datetime", _UtcLocalClock)
+    write_snapshot(raw_dir, "2026-09-20.json")
+
+    removed = sync.cleanup_raw(retention_days=0, raw_dir=raw_dir)
+
+    assert removed == ["2026-09-20.json"]
+
+
+def test_cleanup_raw_keeps_scanning_past_an_unparsable_day_file(raw_dir, tmp_path):
+    """坏日期在前、过期快照在后：`continue` 改成 `break` 就会漏删。
+
+    对应存活的 sync.x_cleanup_raw__mutmut_23。两个坑都在这条上：
+    ① 名字必须**匹配** `????-??-??.json` 这个 glob，否则压根进不了循环
+      （`not-a-date.json` 就是错的夹具 —— 它测不到任何东西）；
+    ② 坏名字必须**排在前面**，否则 break 与 continue 的结果仍然一样。
+    """
+    write_snapshot(raw_dir, "0000-00-00.json")
+    write_snapshot(raw_dir, "2026-09-18.json")
+
+    removed = sync.cleanup_raw(
+        now=date(2026, 9, 20), retention_days=0, raw_dir=raw_dir)
+
+    assert removed == ["2026-09-18.json"]
+    assert (raw_dir / "0000-00-00.json").exists()  # 读不懂的不删，但也不能终止扫描

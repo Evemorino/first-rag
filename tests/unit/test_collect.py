@@ -176,3 +176,110 @@ def test_scope_disables_tool(dirs, monkeypatch):
                                         parse=lambda r: None)])
     collect.gather(DAY, scope={"tools": {"fake": False}})
     assert calls["discover"] == 0
+
+
+# --- 变异测试分诊后补的测试：坏数据必须放在前面 ---
+#
+# 下面几条对应 5 个存活的 `continue` → `break` 变异体。它们原先杀不掉的原因
+# 都一样：夹具里的坏数据排在**最后**，走到 break 时后面已经没有东西了，
+# 于是 break 与 continue 的结果完全相同 —— 测试看着在测循环，其实没测。
+
+
+def test_note_materials_keeps_reading_after_bad_lines_come_first(dirs):
+    """坏行在前、好行在后：`continue` 改成 `break` 就会丢掉后面的好行。"""
+    inbox = config.NOTES_DIR / "inbox.md"
+    inbox.write_text(
+        "not a note line\n"
+        "- [definitely-not-an-iso-timestamp #idea] 时间戳坏了\n"
+        "- [2026-09-18T22:31:00+08:00 #idea] 坏行之后仍要读到\n",
+        encoding="utf-8",
+    )
+
+    mats = collect._note_materials(DAY)
+
+    assert [m.text for m in mats] == ["坏行之后仍要读到"]
+
+
+def test_git_materials_skips_comment_lines_but_keeps_reading(dirs, monkeypatch):
+    """注释行在前、真仓库在后：break 会让真仓库整个不被采集。"""
+    (config.CONFIG_DIR / "repos.txt").write_text(
+        "# 这是注释\n~/Code/llm/rag/first-rag\n", encoding="utf-8")
+    asked: list[str] = []
+    monkeypatch.setattr(
+        collect, "_repo_commits",
+        lambda repo, day: asked.append(repo) or [])
+
+    collect._git_materials(DAY, None)
+
+    assert asked == ["~/Code/llm/rag/first-rag"]
+
+
+def test_gather_keeps_later_refs_when_one_fails_to_parse(dirs, monkeypatch):
+    """同一个插件的两个 ref：第一个 parse 抛异常，第二个必须照样入库。
+
+    NFR-004 说的是"单个插件失败只跳过该插件"，而这里更细一层：一个 ref 坏了
+    不能把同插件后面的 ref 一起带走。
+    """
+    def discover(day):
+        return [SourceRef(source="fake", ref="broken", day=day),
+                SourceRef(source="fake", ref="good", day=day)]
+
+    def parse(ref):
+        if ref.ref == "broken":
+            raise RuntimeError("boom")
+        return RawMaterial(source="fake", ref=ref.ref,
+                           ts=datetime(2026, 9, 18, 10, tzinfo=TZ),
+                           kind="message", text="kept")
+
+    monkeypatch.setattr(collect, "iter_plugins",
+                        lambda: [Plugin(name="fake", discover=discover, parse=parse)])
+
+    day_raw = collect.gather(DAY)
+
+    assert [m.text for m in day_raw.materials] == ["kept"]
+
+
+def test_gather_collected_at_is_shanghai_aware(dirs, monkeypatch):
+    """`collected_at` 必须带 Asia/Shanghai 时区，不能退化成进程本地时间。
+
+    对应存活的 `datetime.now(tz=config.TZ)` → `tz=None` 变异体：本机时区恰好
+    也是 +08，所以两种写法在测试里给出同一个值 —— 契约（PRD 时区约束）实际上
+    一条都没被测过。断言偏移量而不是"相等"才测得到。
+    """
+    monkeypatch.setattr(collect, "iter_plugins", lambda: [])
+
+    day_raw = collect.gather(DAY)
+
+    assert day_raw.collected_at.utcoffset() == timedelta(hours=8)
+
+
+def test_dated_note_file_timestamp_is_shanghai_aware(dirs):
+    """独立笔记的 ts 取自文件 mtime，也必须折算成上海时区。"""
+    note = config.NOTES_DIR / "2026-09-18-field-notes.md"
+    note.write_text("standalone note", encoding="utf-8")
+
+    mats = collect._dated_note_files(DAY)
+
+    assert [m.ts.utcoffset() for m in mats] == [timedelta(hours=8)]
+
+
+def test_gather_keeps_later_plugins_when_an_earlier_discover_raises(dirs, monkeypatch):
+    """第一个插件 discover 抛异常，第二个插件必须仍被采集。
+
+    对应存活的 `continue` → `break`（collect.x_gather__mutmut_25）。已有的
+    test_broken_plugin_is_noop_not_fatal 只放**一个**坏插件，break 与 continue
+    在那个形状下等价 —— NFR-004 要的是"不中断其他来源"，那就必须有"坏在前、
+    好在后"的两个插件才测得到。
+    """
+    def bad_discover(day):
+        raise RuntimeError("discover exploded")
+
+    bad = Plugin(name="bad", discover=bad_discover, parse=lambda r: None)
+    good = _fake_plugin(lambda r: RawMaterial(
+        source="fake", ref="x", ts=datetime(2026, 9, 18, 10, tzinfo=TZ),
+        kind="message", text="still collected"), name="good")
+    monkeypatch.setattr(collect, "iter_plugins", lambda: [bad, good])
+
+    day_raw = collect.gather(DAY)
+
+    assert [m.text for m in day_raw.materials] == ["still collected"]
