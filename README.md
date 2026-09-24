@@ -230,14 +230,46 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
     `msvcrt` 分支，macOS 上根本不可达。`make mutation-selfcheck` 里本来就记着
     "抓住它就是假杀"，所以这 14 条属预期。
 
-  剩下 224 条**还没逐条分类**，但聚集得很清楚，下一步该从哪看是明确的（按存活数）：
-  `collect._parse_json_object` 24、`ask/sync.main` 各 20、`distill_prompt._build_user_prompt`
-  20、`collect._repo_commits` 18、`collect._dated_note_files` 18、`distill._rubric_hash`
-  17、`distill.distill` 17、`collect.save_snapshot` 12 —— 其中 git 与快记两个采集源
-  合计 53 条，是最薄的一块。
+  238 条存活已按"该不该被杀掉"分诊完（规则化归类 + 抽样手工植入验证）：
 
-  记一条流程上的教训：**旧记录只留了数量、没留名单**，所以这次根本无法 diff
-  "哪几条是新增的"，只能整体重测。以后更新基线要连同变异体名一起记。
+  | 类别 | 条数 | 含义 |
+  |---|---|---|
+  | 文案/输出格式 | 90 | prompt 话术、usage、日志串、排版参数。杀掉只能把整段文案抄进断言，成本高于收益 |
+  | 待人工判 | 84 | 多为"参数置 None 后行为其实不变"（`cleanup_raw(now=None)` 函数内部会重算同样的值、`indent=None` 只影响排版），但每条要单独确认 |
+  | 纯 ASCII 假设 | 18 | `ensure_ascii=False` 的变异体：当前 summary 里确实没有非 ASCII，所以杀不掉；**数据一变就是真信号** |
+  | 平台不可达 | 14 | `sync._try_lock` 的 Windows `msvcrt` 分支，macOS 走不到。selfcheck 里记着"抓它就是假杀" |
+  | **真缺口** | **17** | 见下 |
+  | codec 名大小写 | 6 | `"utf-8"` → `"UTF-8"`，Python 编解码器名不敏感，任何测试都杀不死 |
+  | 文件系统大小写 | 4 | 如 `"scope.json"` → `"SCOPE.JSON"`。**本机 APFS 大小写不敏感所以杀不掉，Linux/CI 上会被杀** —— 这类是"本地分数"和"CI 分数"必然不一致的根源 |
+  | 无法归类 | 5 | diff 有多个 hunk，规则化提取失败，需人工看 |
+
+  17 条真缺口聚成三个主题，前两个各是一条系统性的盲区：
+
+  1. **本地时区从来没被断言过**（7 条）：`datetime.now(tz=config.TZ)` → `tz=None`
+     在 `sync.run`、`sync.cleanup_raw`、`collect.gather`、`collect._dated_note_files`、
+     `distill.distill` 上全部存活。也就是说"归属日按 Asia/Shanghai 算"这条契约
+     （PRD 的时区约束）一旦写错，测试不会响。
+  2. **循环里"跳过坏数据"没有测试**（7 条）：`continue` → `break` 在
+     `sync.cleanup_raw`、`collect.gather`、`collect._git_materials`、
+     `collect._note_materials`、`distill._direct_entries`、`distill._dedupe_entries`
+     上存活 —— 一个坏文件/坏条目会让整批后续数据被静默丢弃，而今天的测试全都只放
+     一条坏数据，看不出 `break` 与 `continue` 的差别。**这条与本项目已有的
+     "夹具要变多个元素"教训同源**。
+  3. **零散真缺口**（3 条）：`collect._git_materials` 的 `if not repo or
+     repo.startswith("#")` → `and`（注释行会被当成仓库路径）、
+     `collect._repo_commits` 的 `ts=None`（提交条目会丢掉日期）、
+     `distill_prompt._build_user_prompt` 与 `collect._iso` 的真值判断
+     （`if x` → `if x or True`，等于把兜底分支变成永远走不到）。
+
+  另有一条高度可疑但**未验证**：`collect._repo_commits` 的 `timeout=30` → `None`
+  （git 子进程挂住会让 sync 永久卡死，直接违反 NFR-006）。它记录的 diff 被截断、
+  拼不出可替换的锚点，所以没算进上面的 17 条 —— 记在这里，下次重跑时确认。
+
+  验证方式说明：分桶是规则化的（比较改动前后的字符串字面量、运算符、参数），
+  每个桶都抽了样本**手工把变异打进源码再跑测试**确认（例如
+  `collect.x_gather__mutmut_6` 手工植入后 409 个测试全绿 = 真存活；
+  `sync.x__load_scope__mutmut_4` 同理）。名单以变异体名记录，不再只留数量 ——
+  上一版只写"28 个"导致这次完全无法 diff 新增项。
 
   另外，原来列在"已证等价"里的 `distill._direct_type` 默认值那条，现在**被测试杀掉了**：
   它声称"等价"的依据只是返回值不变，但大写 `REFLECTION` 会落进未知类型兜底、
