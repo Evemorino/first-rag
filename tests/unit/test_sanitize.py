@@ -30,6 +30,7 @@ _GH_CLASSIC = "gh" + "p_"
 _GH_FINE = "github" + "_pat_"
 _AWS = "AK" + "IA"
 _JWT_HEAD = "ey" + "J"
+_ARK = "ar" + "k-"
 
 TOKEN_CASES = {
     "openai_style": _SK + "a" * 20,
@@ -37,6 +38,13 @@ TOKEN_CASES = {
     "github_fine_grained": _GH_FINE + "c" * 25,
     "aws_access_key": _AWS + "D" * 16,
     "jwt": _JWT_HEAD + "d" * 15 + "." + "e" * 15 + "." + "f" * 15,
+    # 方舟 Agent/Coding Plan 的密钥形态（`ark-` + 长串）。本项目真实用的就是这一种，
+    # 而原来的正则只认 `sk-`：2026-09-24 实测裸 ark token 原样穿过脱敏。
+    "ark_plan_key": _ARK + "a" * 42,
+    # 真实的 ark 密钥不是纯字母数字，而是 `ark-` + UUID（中间带连字符）。
+    # 上面那条只证明了"无连字符"这一半；带连字符的另一半同样漏过一次。
+    "ark_uuid_style": (_ARK + "1" * 8 + "-" + "2" * 4 + "-"
+                       + "3" * 4 + "-" + "4" * 4 + "-" + "5" * 12),
 }
 
 # 赋值式泄漏：键名 + 可选的引号。值都是低熵串，只用来验证"值被换掉了"
@@ -50,6 +58,10 @@ ASSIGNMENT_CASES = {
     "passwd": "passwd = qqqqqqqqqq",
     "pwd": 'pwd: "wwwwwwwwww"',
     "密码": "密码 = 123456abc",
+    # 带前缀的环境变量名。旧正则用 `\b` 起头，而 `_` 是单词字符，所以
+    # `ARK_API_KEY=…` 里的 "API_KEY" 前面根本没有边界 —— 整条规则形同不存在。
+    "env_prefixed_api_key": "ARK_API_KEY=abcdef123456",
+    "hyphen_prefixed_api_key": "X-API-Key: abcdef123456",
 }
 
 
@@ -123,6 +135,30 @@ def test_short_values_are_left_alone():
 def test_ordinary_text_is_untouched():
     text = "今天学了 RAG 的召回，top_k=5 效果不错"
     assert sanitize_text(text) == text
+
+
+# --- 误伤防线：ark-/sk- 是常见词的中段，不是令牌 ---
+
+
+def test_hyphenated_words_that_contain_the_prefixes_survive():
+    """`task-lifecycle` 里含 "sk-lifecycle"、`landmark-2` 里含 "ark-2"。
+
+    真实数据里就有这种误报：2026-09-18 那次同步的快照是另一个项目的仓库，
+    `git --stat` 把 `long-task-coordinator.ts`、`task-lifecycle.ts` 这类文件名
+    原样带进素材，我用一把松散的 grep 去查密钥时命中了 5 处"假泄漏"。规则里的
+    `\b` 就是为这种情况留的，所以它必须被钉住 —— 放宽成"看见 ark- 就抹"会把
+    素材里所有任务相关文件名都替换成 [REDACTED]，蒸馏出来的东西就全废了。
+    """
+    for text in (
+        "renamed long-task-coordinator.ts and task-lifecycle.ts and task-runner.ts",
+        "landmark-2 marker and spark-plug notes and hyper-token",
+    ):
+        assert sanitize_text(text) == text
+
+
+def test_test_like_token_that_is_too_short_survives():
+    """长度门槛要守住：`ark-abc` 这种不是密钥，动了只会误伤。"""
+    assert sanitize_text("prefix ar" + "k-abc suffix") == "prefix ark-abc suffix"
 
 
 def test_empty_text_is_untouched():

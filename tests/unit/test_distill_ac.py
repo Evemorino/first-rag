@@ -76,6 +76,11 @@ FAKE_SECRETS = {
     "assigned": "api_key = \"super-secret-value-42\"",
     "assigned_quoted": 'password: "hunter2hunter2"',
     "plain_pwd": "passwd=hunter2hunter2",
+    # 方舟 Agent/Coding Plan 的密钥形态。AC-012 原来只用 sk- 家族的夹具，
+    # 而本项目真实持有的那一种恰好不在任何一条正则里 —— 换模型/换厂商时
+    # "脱敏过"这个结论会静默失效，所以把真实形态也钉进端到端用例。
+    "ark_key": "ar" + "k-" + "9" * 42,
+    "ark_assigned": "ARK_API_KEY=" + "ar" + "k-" + "8" * 42,
 }
 
 
@@ -86,6 +91,7 @@ def note_text() -> str:
         f"AWS 那个是 {FAKE_SECRETS['aws_key']}，JWT 是 {FAKE_SECRETS['jwt']}。",
         f"环境变量 {FAKE_SECRETS['assigned']}，{FAKE_SECRETS['assigned_quoted']}，"
         f"{FAKE_SECRETS['plain_pwd']}。",
+        f"方舟那把是 {FAKE_SECRETS['ark_key']}，写成 {FAKE_SECRETS['ark_assigned']} 也算。",
         "教训：密钥必须走 .env。",
     ]
     return "\n".join(parts)
@@ -116,6 +122,8 @@ def all_secret_strings() -> list[str]:
         FAKE_SECRETS["gh_pat"],
         FAKE_SECRETS["aws_key"],
         FAKE_SECRETS["jwt"],
+        FAKE_SECRETS["ark_key"],
+        "ar" + "k-" + "8" * 42,  # ark_assigned 的值部分
         "super-secret-value-42",
         "hunter2hunter2",
     ]
@@ -148,7 +156,10 @@ def test_ac012_secrets_never_reach_entries_snapshot_or_log(
         materials=[
             make_material(note_text(), kind="note", source="manual"),
             make_material(
-                f"assistant transcript containing {FAKE_SECRETS['sk_key']}",
+                # 每一种密钥的**完整形态**都塞进这条素材（赋值式要连键名一起给：
+                # 光给值那一段，任何正则都认不出来，断言就成了空转）。
+                "assistant transcript containing "
+                + " ".join(FAKE_SECRETS.values()),
                 kind="message",
                 source="claude_code",
                 ref="session-a",
