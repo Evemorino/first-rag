@@ -633,3 +633,78 @@ def test_failed_run_still_records_unknown_model_and_failed_status(isolated_confi
     assert run["model"] == "unknown"
     assert run["status"] == "failed"
     assert run["rubric_hash"] == ""
+
+
+# --- 并行化蒸馏（NFR-006：sync ≤5min）---
+
+
+def test_parallelization_reads_workers_from_schema(isolated_config, monkeypatch):
+    """并行度从 schema 读取并交给线程池；不读配置就是串行、不达标。
+
+    这里不测真并发（时序断言 flaky），只测 executor 拿到了配置的 workers 数、
+    且每一批都进了 executor.map。真并发由 make sync 的 wall-clock 验证。
+    """
+    monkeypatch.setitem(SCHEMA["distill"], "batch_max_chars", 60)
+    monkeypatch.setitem(SCHEMA["distill"], "parallel_workers", 7)
+
+    captured = {}
+
+    class FakeExecutor:
+        def __init__(self, max_workers):
+            captured["max_workers"] = max_workers
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def map(self, fn, items):
+            captured["items"] = list(items)
+            return [fn(item) for item in items]  # 串行执行，只关心结构
+
+    monkeypatch.setattr(distill, "ThreadPoolExecutor", FakeExecutor, raising=False)
+    monkeypatch.setattr(
+        distill, "chat",
+        lambda messages, json_mode=False: json.dumps(
+            {"entries": [candidate("条目", ref="session-a")]}))
+
+    day_raw = make_day_raw([
+        make_material("x" * 50, ref="session-a"),
+        make_material("y" * 50, ref="session-b"),
+        make_material("z" * 50, ref="session-c"),
+    ])
+
+    distill.distill(day_raw)
+
+    assert captured["max_workers"] == 7
+    assert len(captured["items"]) == 3
+
+
+def test_parallel_batches_preserve_batch_order(isolated_config, monkeypatch):
+    """并行化后条目仍按 batch 顺序合并：cap 取前 N 条，顺序乱了会裁错。
+
+    pool.map 保序是并行化唯一的正确性关键 —— 线程完成顺序不确定，只有结果按
+    提交顺序收集，才能让"蒸出哪些条目"与串行完全一致（宪法 IV）。
+    """
+    monkeypatch.setitem(SCHEMA["distill"], "batch_max_chars", 60)
+    monkeypatch.setitem(SCHEMA["distill"], "parallel_workers", 3)
+
+    def fake_chat(messages, json_mode=False):
+        body = messages[1]["content"]
+        refs = [r for r in ("session-a", "session-b", "session-c")
+                if f'"{r}"' in body]
+        return json.dumps({"entries": [candidate(f"条目 {r}", ref=r) for r in refs]})
+
+    monkeypatch.setattr(distill, "chat", fake_chat)
+    day_raw = make_day_raw([
+        make_material("x" * 50, ref="session-a"),
+        make_material("y" * 50, ref="session-b"),
+        make_material("z" * 50, ref="session-c"),
+    ])
+
+    entries = distill.distill(day_raw)
+
+    assert [e.text for e in entries] == [
+        "条目 session-a", "条目 session-b", "条目 session-c",
+    ]

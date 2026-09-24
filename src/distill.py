@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import date, datetime
 from typing import Any
@@ -277,16 +278,33 @@ def _batched_llm_entries(
 
     每批只看得见本批素材，source_refs 也因此只能引用本批；没有 LLM 素材的批次
     直接跳过 —— 那些内容已经走直并入入库了，再问一次只是白烧 token。
+
+    并行化（NFR-006 sync ≤5min）：串行 11 批 × ~85s ≈ 983s 严重超预算，改成
+    ThreadPoolExecutor 并发发各批请求。正确性关键在 pool.map —— 它按提交顺序
+    收集结果，线程完成顺序虽不确定，返回的 entries 仍与串行逐批顺序一致；
+    _cap_entries 取前 N 条，顺序乱了会裁错（宪法 IV 的确定性）。
     """
     budget = schema["distill"]["batch_max_chars"]
-    entries: list[Entry] = []
+    workers = schema["distill"].get("parallel_workers", 4)  # 默认值仅供缺键时兜底
+
+    jobs = []
     for group in split_for_batches(day_raw.materials, budget):
         batch = replace(day_raw, materials=group)
         if not _llm_materials(batch):
             continue
-        messages = distill_prompt.build_messages(batch, schema)
-        entries.extend(
-            _llm_entries(messages, allowed_types, batch, version, created_at))
+        jobs.append((distill_prompt.build_messages(batch, schema), batch))
+
+    if not jobs:
+        return []
+
+    def _run(job):
+        messages, batch = job
+        return _llm_entries(messages, allowed_types, batch, version, created_at)
+
+    entries: list[Entry] = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for batch_entries in pool.map(_run, jobs):
+            entries.extend(batch_entries)
     return entries
 
 
