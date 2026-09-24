@@ -165,6 +165,58 @@ def test_cap_warns_about_the_cut(caplog):
                for record in caplog.records)
 
 
+# 下面四条钉的是 _cap 的**边界**：2026-09-24 全量重建跑出 5 条存活变异体
+# （`<=`→`<`、`>`→`>=`、`>100`→`>=100`、`>100`→`>101`、`used +=`→`used =`），
+# 每条都在"正好等于/差一个字符"的位置上改变行为，而上面的夹具用的数字全都
+# 离边界很远 —— 截断逻辑的契约恰恰只在边界上才成立。
+
+def test_cap_treats_a_day_exactly_at_the_limit_as_fitting():
+    """总量**正好等于**上限时不该动一刀（`total <= max_chars`）。"""
+    day_raw = _day_raw("a" * 60, "b" * 40)
+
+    collect._cap(day_raw, 100)
+
+    assert [m.text for m in day_raw.materials] == ["a" * 60, "b" * 40]
+    # 没截断就不该重建素材：丢 meta 的"看起来一样"也是回归
+    assert all(m.meta == {"k": "v"} for m in day_raw.materials)
+
+
+def test_cap_keeps_a_material_that_exactly_fills_the_budget():
+    """某条素材正好把预算填满时它要留下（`used + len > max_chars`，不是 `>=`）。"""
+    day_raw = _day_raw("a" * 50, "b" * 50, "c" * 50)
+
+    collect._cap(day_raw, 100)
+
+    assert [m.text for m in day_raw.materials] == ["a" * 50, "b" * 50]
+
+
+def test_cap_drops_a_remainder_of_exactly_one_hundred_chars():
+    """剩 100 字符是"不超过 100"，按规则丢弃（`remaining > 100`，不是 `>=`）。"""
+    day_raw = _day_raw("a" * 100, "b" * 200)
+
+    collect._cap(day_raw, 200)
+
+    assert [m.text for m in day_raw.materials] == ["a" * 100]
+
+
+def test_cap_keeps_a_remainder_of_one_hundred_and_one_chars():
+    """剩 101 就该留（`> 100` 而不是 `> 101`），且预算是**累加**出来的。"""
+    day_raw = _day_raw("a" * 100, "b" * 200)
+
+    collect._cap(day_raw, 201)
+
+    assert [m.text for m in day_raw.materials] == ["a" * 100, "b" * 101]
+
+
+def test_cap_accumulates_used_across_three_materials():
+    """三条素材时 `used` 必须是累加值，不是"最后一条的长度"。"""
+    day_raw = _day_raw("a" * 60, "b" * 60, "c" * 60)
+
+    collect._cap(day_raw, 150)
+
+    assert [m.text for m in day_raw.materials] == ["a" * 60, "b" * 60]
+
+
 def test_scope_disables_tool(dirs, monkeypatch):
     calls = {"discover": 0}
 
@@ -336,3 +388,41 @@ def test_iso_returns_none_for_a_missing_timestamp():
     assert collect._iso(None) is None
     assert collect._iso(datetime(2026, 9, 18, 10, tzinfo=TZ)) == \
         "2026-09-18T10:00:00+08:00"
+
+
+# --- scope.json 少键：防御性默认值必须守得住 ---
+#
+# 对应存活变异体 collect.x_gather__mutmut_16/18 与 collect.x__git_materials__mutmut_24/26：
+# `scope.get("tools", {})` 被改成 `.get("tools", None)`。默认值一旦变成 None，
+# 下一句 `None.get(...)` 就是 AttributeError，整次 sync 直接死 —— 而当时没有任何
+# 测试喂过"只写了另一半键"的 scope.json（人手工编辑过的文件正是这个形状）。
+
+
+def test_gather_survives_a_scope_file_without_a_tools_key(dirs, monkeypatch):
+    calls = {"discover": 0}
+
+    def discover(day):
+        calls["discover"] += 1
+        return []
+
+    monkeypatch.setattr(collect, "iter_plugins",
+                        lambda: [Plugin(name="fake", discover=discover,
+                                        parse=lambda r: None)])
+
+    day_raw = collect.gather(DAY, scope={"projects": {}})
+
+    assert calls["discover"] == 1, "缺 tools 键不该把插件当关掉"
+    assert day_raw.materials == []
+
+
+def test_git_materials_survive_a_scope_file_without_a_projects_key(dirs, monkeypatch):
+    ran = []
+    monkeypatch.setattr(collect, "_repo_commits",
+                        lambda repo, day: ran.append(repo) or [])
+    (config.CONFIG_DIR / "repos.txt").write_text("/tmp/whatever\n",
+                                                 encoding="utf-8")
+
+    mats = collect._git_materials(DAY, scope={"tools": {}})
+
+    assert ran == ["/tmp/whatever"], "缺 projects 键不该把仓库当关掉"
+    assert mats == []
