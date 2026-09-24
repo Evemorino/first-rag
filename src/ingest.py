@@ -5,7 +5,7 @@ T013 负责入库直插，T017 在 embedding 与 upsert 之间接入新颖度去
 由 Qdrant 的 upsert 语义覆盖旧点，保证不产生重复数据。
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from uuid import UUID
 
@@ -60,6 +60,23 @@ def _payload(entry: Entry) -> dict[str, object]:
     }
 
 
+def _merge_related(existing: list[UUID], new: list[str]) -> list[UUID]:
+    """合并条目既有的 related 与相似度新建的边（FR-017 上限 5）。
+
+    条目从蒸馏阶段进来时 related 通常是空的，但重蒸馏或手工构造的条目可能
+    已经带边；相似度搜索只是**补充**边，不能把既有边抹掉。去重按字符串 id
+    比较（related 在 payload 里本就存成字符串），封顶 5 与 build_related_edges
+    的 max_edges 保持一致。
+    """
+    merged: list[UUID] = list(existing)
+    seen = {str(related) for related in merged}
+    for related in new:
+        if related not in seen and len(merged) < 5:
+            merged.append(UUID(related))
+            seen.add(related)
+    return merged
+
+
 # Ark embeddings 单次 input 上限 10 条，超了直接 400 InvalidParameter
 # （第一次真跑 make sync 撞出来的：11 条条目 → "max 10, got 11"）。
 # 这个限制本属于客户端契约，但 ark_client 是宪法 VII 的手写核心模块，
@@ -105,13 +122,30 @@ def upsert(entries: list[Entry]) -> Report:
         client=client,
         collection_name=config.COLLECTION,
     )
+    # 只对会真正入库的条目建关联边（FR-017 / T027）：重复项已被 filter_novel
+    # 跳过，不该再参与建边。复用同一个 client，不多建连接。
+    kept = [ordered[index] for index in kept_indices]
+    edges = similarity.build_related_edges(
+        [point_id for point_id, _, _ in kept],
+        [vector for _, vector, _ in kept],
+        client=client,
+        collection_name=config.COLLECTION,
+    )
     points = [
         PointStruct(
-            id=ordered[index][0],
-            vector=ordered[index][1],
-            payload=_payload(ordered[index][2]),
+            id=point_id,
+            vector=vector,
+            payload=_payload(
+                replace(
+                    entry,
+                    related=_merge_related(
+                        entry.related,
+                        edges.new_related.get(str(point_id), []),
+                    ),
+                )
+            ),
         )
-        for index in kept_indices
+        for point_id, vector, entry in kept
     ]
     if not points:
         return Report(upserted=0)
@@ -121,4 +155,13 @@ def upsert(entries: list[Entry]) -> Report:
         points=points,
         wait=True,
     )
+    # 关联边是双向的：新条目入库后，把新条目 id 回填到邻居已有的 related 里
+    # （E -> N 方向）。build_related_edges 已算好回填后的完整列表，直接写回，
+    # 避免在 upsert 之后逐条重读。
+    for existing_id, related in edges.backfill.items():
+        client.set_payload(
+            collection_name=config.COLLECTION,
+            payload={"related": related},
+            points=[existing_id],
+        )
     return Report(upserted=len(points))

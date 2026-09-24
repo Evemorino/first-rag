@@ -36,6 +36,7 @@ class FakeQdrantClient:
         self.points = points or []
         self.calls = []
         self.queries = []
+        self.set_payload_calls = []
 
     def collection_exists(self, collection_name: str) -> bool:
         return self.exists
@@ -46,6 +47,10 @@ class FakeQdrantClient:
 
     def upsert(self, **kwargs):
         self.calls.append(kwargs)
+        return SimpleNamespace(operation_id=1)
+
+    def set_payload(self, **kwargs):
+        self.set_payload_calls.append(kwargs)
         return SimpleNamespace(operation_id=1)
 
 
@@ -244,3 +249,110 @@ def test_upsert_allows_exact_same_point_id_on_rerun(fake_embed, monkeypatch):
 
     assert report.upserted == 1
     assert len(client.calls) == 1
+
+
+# --- T028 关联边接线（FR-017）---
+
+
+def test_upsert_builds_related_edges_and_backfills(fake_embed, monkeypatch):
+    """新条目命中相似邻居时：payload.related 填邻居，邻居 related 回填新条目。
+
+    score 0.80 落在 (0.75, 0.82) 之间：既高于关联边阈值（要建边），又低于
+    新颖度阈值（不算重复、允许入库）—— 两条阈值不是一回事。
+    """
+    entry = make_entry()
+    new_id = ids.point_id(entry.source, entry.date, entry.text)
+    neighbor_id = str(ids.point_id("claude_code", "2026-09-19", "existing lesson"))
+    client = FakeQdrantClient(
+        exists=True,
+        points=[SimpleNamespace(id=neighbor_id, score=0.80, payload={"related": []})],
+    )
+    monkeypatch.setattr(ingest, "_client", lambda: client)
+
+    report = ingest.upsert([entry])
+
+    assert report.upserted == 1
+    written = client.calls[0]["points"][0]
+    assert written.payload["related"] == [neighbor_id]
+    assert client.set_payload_calls == [
+        {
+            "collection_name": "learning_memory",
+            "payload": {"related": [str(new_id)]},
+            "points": [neighbor_id],
+        }
+    ]
+
+
+def test_upsert_no_related_edges_when_no_neighbors(fake_embed, monkeypatch):
+    """库中无相似邻居：related 留空，不触发任何回填。"""
+    entry = make_entry()
+    client = FakeQdrantClient(exists=True, points=[])
+    monkeypatch.setattr(ingest, "_client", lambda: client)
+
+    report = ingest.upsert([entry])
+
+    assert report.upserted == 1
+    written = client.calls[0]["points"][0]
+    assert written.payload["related"] == []
+    assert client.set_payload_calls == []
+
+
+def test_upsert_rerun_does_not_duplicate_edges(fake_embed, monkeypatch):
+    """幂等重跑：邻居已含本条目，回填去重，不重复 set_payload。"""
+    entry = make_entry()
+    new_id = ids.point_id(entry.source, entry.date, entry.text)
+    neighbor_id = str(ids.point_id("claude_code", "2026-09-19", "existing lesson"))
+    client = FakeQdrantClient(
+        exists=True,
+        points=[SimpleNamespace(id=neighbor_id, score=0.80,
+                                payload={"related": [str(new_id)]})],
+    )
+    monkeypatch.setattr(ingest, "_client", lambda: client)
+
+    report = ingest.upsert([entry])
+
+    assert report.upserted == 1
+    written = client.calls[0]["points"][0]
+    assert written.payload["related"] == [neighbor_id]
+    assert client.set_payload_calls == []
+
+
+def test_upsert_merges_preexisting_related_with_new_edges(fake_embed, monkeypatch):
+    """条目带入的既有 related 与相似度新建的边要合并，不能互相覆盖。"""
+    preexisting = ids.point_id("claude_code", "2026-09-20", "neighbor")
+    entry = make_entry(related=[preexisting])
+    neighbor_id = str(ids.point_id("claude_code", "2026-09-19", "existing lesson"))
+    client = FakeQdrantClient(
+        exists=True,
+        points=[SimpleNamespace(id=neighbor_id, score=0.80, payload={"related": []})],
+    )
+    monkeypatch.setattr(ingest, "_client", lambda: client)
+
+    report = ingest.upsert([entry])
+
+    assert report.upserted == 1
+    written = client.calls[0]["points"][0]
+    assert written.payload["related"] == [str(preexisting), neighbor_id]
+
+
+def test_merge_related_dedupes_new_edge_already_in_existing():
+    """新边与既有 related 重合时去重，不重复追加。"""
+    existing = [ids.point_id("claude_code", "2026-09-20", "n1")]
+    new = [str(existing[0])]
+
+    merged = ingest._merge_related(existing, new)
+
+    assert merged == existing
+
+
+def test_merge_related_caps_at_five():
+    """既有 related 已满 5 条时，新边不再追加（FR-017 上限 5）。"""
+    existing = [
+        ids.point_id("claude_code", "2026-09-20", f"n{i}") for i in range(5)
+    ]
+    new = [str(ids.point_id("claude_code", "2026-09-20", "overflow"))]
+
+    merged = ingest._merge_related(existing, new)
+
+    assert merged == existing
+    assert len(merged) == 5
