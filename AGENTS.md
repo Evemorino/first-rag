@@ -78,7 +78,8 @@ scripts/mutation_selfcheck.py  # 变异自检 canary（改坏源码看测试红�
 scripts/baseline_check.py      # 文档基线核对：mutants/ 真实结果 vs README 写死的数字
 scripts/gate_selftest.py       # 门禁自检：给 14 个钩子各植入一个违规，断言它真会红
 tests/mutmut_compat.py  # mutmut 3.x 对 `src.` 包名的兼容补丁（见文件头）
-config/            # schema.json（类型/rubric/检索/trae 映射/保留期）、repos.txt、scope.json
+config/            # schema.json（类型/rubric/检索/trae 映射/保留期）、repos.txt（git 采集仓库清单，
+                   # 一行一个绝对路径；`~` 不展开）；scope.json 只在人跑过 `make scope` 后才存在
 data/              # qdrant/ 与 raw/（gitignore；备份=复制本目录）
 notes/             # inbox.md 手动快记（gitignore）
 tests/unit|integration/  # 单测 / 需 Qdrant 或内嵌向量库的集成测试
