@@ -117,6 +117,11 @@ mutation-selfcheck:
 mutation: mutation-selfcheck
 	$(PY) -m mutmut run
 	$(PY) -m mutmut results --all true
+	# mutmut 是**原地**改源码跑批的：跑完源码还原了，但 src/__pycache__ 里可能
+	# 留着按变异体字节码编译的 .pyc，Python 只认 mtime 就会继续执行它 —— 下一次
+	# pytest 会在干净的源码上看到"测试红了"（2026-09-24 真踩过，一条边界测试
+	# 被读成 [60,120,60]）。跑批收尾必须把缓存清掉。
+	@find src tests scripts -name __pycache__ -type d -prune -exec rm -rf {} +
 	$(PY) scripts/baseline_check.py
 
 # 只核对不重跑：改了 src/ 或 tests/ 之后，想知道 README 里那个分数还准不准。

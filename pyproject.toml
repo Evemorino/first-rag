@@ -64,6 +64,10 @@ source_paths = ["src/"]
 # 一分钟，但那是「密钥会不会进 LLM」的闸门，值得）+ 三条主流程（ask / collect
 # / distill）。想全量就把这行删掉。
 #
+# 2026-09-24 加进 distill_batches：装箱算错会让一整批素材静默不蒸馏，正是
+# 这一类。没加 secret_patterns —— 它只有模块级的正则常量、零个函数，mutmut
+# 生不出变异体，加进去只会让"文件数"看着涨了而数字没动。
+#
 # 注意：加文件进去必须**整个重建** mutants/（`mv mutants /tmp/…`），
 # mutmut 3.x 不会为新增文件补生成变异体（连 collect 子命令都没有），
 # 不然你会以为覆盖扩大了，其实数字没动。
@@ -78,6 +82,7 @@ only_mutate = [
     "src/ask.py",
     "src/collect.py",
     "src/distill.py",
+    "src/distill_batches.py",
 ]
 pytest_add_cli_args = ["-x", "-q", "--no-header", "-p", "no:cacheprovider"]
 # mutants/ 是独立的工作副本：config/ 是测试要读的 schema.json；scripts/ 是因为
@@ -88,7 +93,12 @@ pytest_add_cli_args = ["-x", "-q", "--no-header", "-p", "no:cacheprovider"]
 # 有没有各走各的"，而测试文件里的 REPO_ROOT 在副本里指向 mutants/ 自己。
 # Makefile 同理：test_makefile_forwarding 要读它核对"参数有没有真的转发给 CLI"。
 # 同一个坑踩了两次，记住：**任何测试要读仓库根的文件，都必须进 also_copy**。
-also_copy = ["config/", "scripts/", ".pre-commit-config.yaml", "Makefile"]
+# 2026-09-24 第三次踩，还是我自己：test_path_literals 要核对 PRD.md 里的文件名，
+# 而 PRD.md 没进这份名单 → make mutation 在收集 stats 阶段就 FileNotFoundError
+# 崩掉，报的还是"runner returned 1"这种看不出根因的错。
+# 现在的兜底做法：改完任何读仓库根文件的测试，跑一次
+# `grep -rn 'REPO_ROOT / ' tests/` 对照这份名单，缺一行就补一行。
+also_copy = ["config/", "scripts/", ".pre-commit-config.yaml", "Makefile", "PRD.md"]
 do_not_mutate = ["src/plugins/_template/*"]
 # 按源码行排除，两类：
 # 1. 纯文案行 —— 拼给 LLM 的 JSON 字段名、示例文本、日志格式串。改这些不会

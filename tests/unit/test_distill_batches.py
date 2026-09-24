@@ -54,6 +54,22 @@ def test_single_material_bigger_than_budget_keeps_its_own_batch():
     assert batches == [[big], [small]]
 
 
+def test_a_batch_may_sit_exactly_on_the_budget():
+    """装满到预算是**允许**的（`>` 而不是 `>=`），且每批都得装满。
+
+    这条是为三条真实存活变异体补的（2026-09-24 全量重建跑出来的）：
+    `used + size > max_chars` → `>=`、初始 `used = 0` → `1`、重置
+    `current, used = [], 0` → `1`。三条都是边界上的 off-by-one，而原有夹具的
+    批次大小是 180/60 这类"没装满"的数，正好绕开它们 —— 装箱逻辑的契约恰恰
+    只在装满的那一刻才成立。
+    """
+    mats = [material("x" * 60, ref=f"s{i}") for i in range(4)]
+
+    batches = split_for_batches(mats, max_chars=120)
+
+    assert [sum(len(m.text) for m in b) for b in batches] == [120, 120]
+
+
 def test_no_materials_yields_no_batches():
     """空日不发请求：一批都没有时不该产生任何 LLM 往返。"""
     assert split_for_batches([], max_chars=100) == []
