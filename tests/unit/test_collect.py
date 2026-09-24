@@ -426,3 +426,97 @@ def test_git_materials_survive_a_scope_file_without_a_projects_key(dirs, monkeyp
 
     assert ran == ["/tmp/whatever"], "缺 projects 键不该把仓库当关掉"
     assert mats == []
+
+
+# --- 素材与快照的字段契约（41 条"程序读的字符串被改"里最集中的两簇）---
+#
+# 2026-09-24 重判发现：这一族不是文案。`source="manual"`、`kind="commit"`、
+# `meta["note_type"]`、快照里的 `"collected_at"` 全是**程序读的键与枚举值**，
+# 改了就变行为，而测试一直只断言文本和时间戳。下面四条把它们钉住。
+
+
+def test_dated_note_file_material_fields_are_the_contract(dirs):
+    """独立笔记文件必须标成 manual/note/note_type=reflection。
+
+    这三个值决定它走不走 LLM（FR-013 的直并入路径按 source/kind 分流）、
+    蒸馏出什么类型。上一版只有 `test_dated_note_file_picked_up` 断言了文本，
+    于是 `collect.x__dated_note_files__mutmut_*` 12 条改这些字面量的变异体
+    全部存活 —— 包括 source 改成别的值、kind 改成 message、note_type 改大小写。
+    """
+    (config.NOTES_DIR / "2026-09-18-field-notes.md").write_text(
+        "standalone note", encoding="utf-8")
+
+    mat = collect._dated_note_files(DAY)[0]
+
+    assert mat.source == "manual"
+    assert mat.kind == "note"
+    assert mat.ref == "2026-09-18-field-notes.md"
+    assert mat.meta == {"note_type": "reflection"}
+    assert mat.text == "standalone note"
+
+
+def test_repo_commit_material_and_argv_are_the_contract(dirs, monkeypatch):
+    """git 素材的 source/kind/meta["project"] 与 argv[0] 都是契约。
+
+    `kind="commit"` 决定蒸馏时它算哪类素材；`meta["project"]` 是条目的项目归属
+    （检索按 project 过滤就靠它，FR-018）；`"git"` 被改成 `"GIT"` 在 macOS 上
+    还能跑（APFS 大小写不敏感），到 Linux CI 上就是 FileNotFoundError。
+    """
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(
+            cmd, 0,
+            stdout="deadbeef\x002026-09-18T10:00:00+08:00\x00subject here"
+                   "\x00body here\x1e",
+            stderr="")
+
+    monkeypatch.setattr(collect.subprocess, "run", fake_run)
+
+    mats = collect._repo_commits("/repo/first-rag", DAY)
+
+    assert captured["cmd"][0] == "git"
+    assert captured["cmd"][1:3] == ["-C", "/repo/first-rag"]
+    assert len(mats) == 1
+    mat = mats[0]
+    assert mat.source == "git"
+    assert mat.kind == "commit"
+    assert mat.ref == "deadbeef"
+    assert mat.meta == {"project": "first-rag"}
+    assert mat.text == "subject here\nbody here"
+
+
+def test_git_window_is_closed_at_the_local_day_end(dirs, monkeypatch):
+    """`--until` 必须是本地日的 23:59:59 +0800，不能被丢掉。
+
+    丢掉上界就会把**之后**的提交也算进这一天（幂等重跑时条目会随时间变化，
+    NFR-003 破）。`--since`/`--until` 也各自带 +0800，不靠进程本地时区。
+    """
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(collect.subprocess, "run", fake_run)
+
+    collect._repo_commits("/repo/x", DAY)
+
+    args = captured["cmd"]
+    assert any(a.startswith("--since=2026-09-18 00:00 +0800") for a in args)
+    assert any(a.startswith("--until=2026-09-18 23:59:59 +0800") for a in args)
+
+
+def test_snapshot_top_level_keys_are_the_schema(dirs, monkeypatch):
+    """快照的四个顶层键是 data-model 的契约，多一个少一个都算破。
+
+    `DayRaw.to_dict` 里 `"collected_at"` 被改成大写/XX 包装时，文本内容看起来
+    一样，只有键集合能抓住（FR-006 要快照能重放）。
+    """
+    monkeypatch.setattr(collect, "iter_plugins", lambda: [])
+
+    collect.gather(DAY)
+
+    saved = json.loads(collect.snapshot_path(DAY).read_text(encoding="utf-8"))
+    assert set(saved) == {"date", "collected_at", "distill_run", "materials"}

@@ -30,9 +30,11 @@ mutmut 报"存活"只说明一件事：**在它自己的 trampoline 机制下**�
 from __future__ import annotations
 
 import argparse
+import atexit
 import difflib
 import json
 import re
+import signal
 import subprocess
 import sys
 from collections import Counter, defaultdict
@@ -202,6 +204,21 @@ def tree_is_clean() -> tuple[bool, str]:
     return proc.returncode == 0 and not proc.stdout.strip(), proc.stdout.strip()
 
 
+_PENDING: tuple[Path, bytes] | None = None
+
+
+def restore_pending() -> None:
+    """把"正被改写的那个文件"还原。中断（Ctrl-C / kill）时也必须做这件事。"""
+    global _PENDING
+    if _PENDING is None:
+        return
+    path, original = _PENDING
+    _PENDING = None
+    if path.read_bytes() != original:
+        path.write_bytes(original)
+        print(f"!! 中断在 {path}，已按字节还原", file=sys.stderr)
+
+
 def recheck(item: Survivor, pytest_args: list[str]) -> str:
     src = REPO_ROOT / "src" / item.module
     original = src.read_bytes()
@@ -209,6 +226,8 @@ def recheck(item: Survivor, pytest_args: list[str]) -> str:
     if mutated is None:
         return "锚点不唯一（未判）"
     src.write_text(mutated, encoding="utf-8")
+    global _PENDING
+    _PENDING = (src, original)
     try:
         proc = subprocess.run(
             ["uv", "run", "--no-sync", "python", "-m", "pytest", *pytest_args],
@@ -216,6 +235,7 @@ def recheck(item: Survivor, pytest_args: list[str]) -> str:
         verdict = "手工可杀" if proc.returncode else "手工也杀不掉"
     finally:
         src.write_bytes(original)
+        _PENDING = None
     if src.read_bytes() != original:
         print(f"!! {src} 还原失败，立刻停在这里", file=sys.stderr)
         raise SystemExit(2)
@@ -260,6 +280,10 @@ def main(argv: list[str] | None = None) -> int:
     if not clean:
         print(f"src/ 有未提交改动，拒绝跑（它会改写源码）：\n{dirty}", file=sys.stderr)
         return 2
+    # 改写源码的工具必须假设自己会被打断：atexit + 信号各留一道还原。
+    atexit.register(restore_pending)
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *_a: (restore_pending(), sys.exit(130)))
 
     results = Counter()
     by_family: dict[str, Counter] = defaultdict(Counter)

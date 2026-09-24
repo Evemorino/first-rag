@@ -1,5 +1,6 @@
 """T015 contract tests for runtime distillation prompt assembly."""
 
+import json
 from datetime import date, datetime
 
 from src import distill_prompt
@@ -151,3 +152,26 @@ def test_user_prompt_serializes_a_missing_timestamp_as_null():
     prompt = distill_prompt.build_user_prompt(day_raw)
 
     assert '"ts": null' in prompt
+
+
+def test_prompt_spells_the_json_keys_the_parser_reads():
+    """`entries` 与载荷里的 `date` 是模型和 distill 之间的字段名，不是文案。
+
+    改成一个字母（ENTRIES / DATE），模型照样回一份像样的 JSON，但
+    `distill._parse_json_object` 找不到 `entries` 就整天 0 条 —— 红的是对端，
+    这里静默。所以必须钉字面量而不是"看起来像 JSON"。
+    对应 distill_prompt.x__output_example__mutmut_7/8 与
+    x_build_user_prompt__mutmut_6/7。
+    """
+    system = distill_prompt.build_system_prompt(SCHEMA)
+    payload = json.loads(system.split("JSON example:\n", 1)[1])
+    prompt = distill_prompt.build_user_prompt(make_day_raw())
+    day_payload = json.loads(prompt.split("DAY_RAW_JSON:\n", 1)[1])
+
+    # 不能只断言 '"entries": [' 出现了：prompt 里另一句 `return {"entries": []}`
+    # 也含这个子串，键名被改成 ENTRIES 时照样过 —— 得把示例本身解析出来。
+    assert set(payload) == {"entries"}
+    assert set(payload["entries"][0]) == {"text", "type", "tags", "source_refs"}
+    assert payload["entries"][0]["type"] == "progress"   # 类型枚举来自配置
+    assert set(day_payload) == {"date", "materials"}
+    assert day_payload["date"] == "2026-09-20"

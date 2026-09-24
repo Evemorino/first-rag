@@ -196,6 +196,26 @@ def test_main_reports_without_touching_source(monkeypatch, mutants, capsys):
     assert "边界与比较符" in out and "纯文案" in out and called == []   # 不跑测试
 
 
+def test_pending_restore_survives_an_interrupt(tmp_path):
+    """被 Ctrl-C / kill 打断时也不许留下被改写的 src/。
+
+    真踩过：全局 --run 跑到第 9 条被我 pkill，`src/ask.py` 就停在
+    `logger.exception("XXask failedXX")` 上 —— 一个会改写源码的工具，
+    缺了这一步就是"用它等于给自己埋一次脏工作区"。
+    """
+    victim = tmp_path / "ask.py"
+    victim.write_text("logger.exception('ask failed')\n", encoding="utf-8")
+    original = victim.read_bytes()
+
+    mr._PENDING = (victim, original)
+    victim.write_text("logger.exception('XXask failedXX')\n", encoding="utf-8")
+
+    mr.restore_pending()
+    assert victim.read_bytes() == original
+    assert mr._PENDING is None
+    mr.restore_pending()          # 幂等：没有待还原的东西时不该报错
+
+
 def test_main_missing_mutants_is_two(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(mr, "MUTANTS", tmp_path / "nope")
 

@@ -1,6 +1,8 @@
 """T016 core tests for distillation orchestration."""
 
+import hashlib
 import json
+import re
 from datetime import date, datetime, timedelta
 
 import pytest
@@ -564,3 +566,70 @@ def test_batch_without_llm_material_is_not_sent(isolated_config, monkeypatch):
     assert len(prompts) == 1
     assert "session-a" in prompts[0] and "inbox.md" not in prompts[0]
     assert len(entries) == 2  # claude 蒸出来的一条 + 快记直并入的一条
+
+
+# --- distill_run 与 rubric_hash 的字面值契约 ---
+#
+# 2026-09-24 重判里 `distill` 是键名族最大的一簇（16 条）：model 的
+# "none"/"direct"/"unknown"、status、以及 rubric_hash 的输入键。这些值决定
+# 重蒸馏对照怎么判定条目是哪一版蒸出来的（FR-023），改一个字母不会让任何
+# 现有测试响。
+
+
+def test_empty_day_records_the_noop_run(isolated_config):
+    distill.distill(make_day_raw([]))
+
+    run = load_snapshot(date(2026, 9, 20))["distill_run"]
+    assert set(run) == {"model", "rubric_hash", "status"}
+    assert run["model"] == "none"
+    assert run["status"] == "noop"
+    assert re.fullmatch(r"[0-9a-f]{64}", run["rubric_hash"])
+
+
+def test_direct_only_day_records_the_direct_model(isolated_config):
+    """只有直并入素材时记 `direct`，不是 `none` 也不是聊天模型名。"""
+    distill.distill(make_day_raw([
+        make_material("一条快记", kind="note", source="manual",
+                      ref="inbox.md", meta={"note_type": "idea"}),
+    ]))
+
+    run = load_snapshot(date(2026, 9, 20))["distill_run"]
+    assert run["model"] == "direct"
+    assert run["status"] == "ok"
+
+
+def test_rubric_hash_covers_exactly_types_and_distill(isolated_config):
+    """rubric_hash 只覆盖 types + distill 两节，且可独立重算。
+
+    它是条目 distill_version 的一部分：换成别的键名（"TYPES"/"DISTILL"）或
+    把 retrieval 也卷进来，都会悄悄改掉所有条目的版本号，重蒸馏对照就废了。
+    """
+    unrelated = json.loads(json.dumps(SCHEMA))
+    unrelated["retrieval"]["top_k"] = 99
+
+    assert distill._rubric_hash(unrelated) == distill._rubric_hash(SCHEMA)
+    expected = hashlib.sha256(json.dumps(
+        {"types": SCHEMA["types"], "distill": SCHEMA["distill"]},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    assert distill._rubric_hash(SCHEMA) == expected
+
+
+def test_failed_run_still_records_unknown_model_and_failed_status(isolated_config, monkeypatch):
+    """异常路径也要留下可审计的运行记录：model=unknown、status=failed。
+
+    `model = "unknown"` 是"还没读到 CHAT_MODEL 就炸了"的哨兵值；它被改成大写
+    或 XX 包装时没有任何测试会响（对应 distill.x_distill__mutmut_3/4/5），
+    而下一个人查"那天为什么没入库"全靠这行记录。
+    """
+    def boom():
+        raise RuntimeError("schema unreadable")
+
+    monkeypatch.setattr(distill.config, "load_schema", boom)
+
+    with pytest.raises(RuntimeError):
+        distill.distill(make_day_raw([make_material("随便一条")]))
+
+    run = load_snapshot(date(2026, 9, 20))["distill_run"]
+    assert run["model"] == "unknown"
+    assert run["status"] == "failed"
+    assert run["rubric_hash"] == ""
