@@ -348,3 +348,20 @@ def test_cleanup_raw_keeps_scanning_past_an_unparsable_day_file(raw_dir, tmp_pat
 
     assert removed == ["2026-09-18.json"]
     assert (raw_dir / "0000-00-00.json").exists()  # 读不懂的不删，但也不能终止扫描
+
+
+def test_run_hands_cleanup_raw_the_shanghai_day(pipeline, monkeypatch):
+    """sync.run 传给 cleanup_raw 的"今天"也必须按上海时区算。
+
+    对应存活的 sync.x_run__mutmut_16（`cleanup_raw(now=datetime.now(tz=None)...)`）。
+    上面那条测的是 run 自己的归属日，这一条测的是**传给清理的那颗钟**：两者是
+    不同的调用点，只测一个的话另一个照样能错 —— 错完昨天的 raw 会被多留一天。
+    """
+    seen = {}
+    monkeypatch.setattr(sync, "datetime", _UtcLocalClock)
+    monkeypatch.setattr(
+        sync, "cleanup_raw",
+        lambda **kw: seen.update(kw) or [])
+
+    assert sync.main(["sync"]) == 0
+    assert seen["now"] == date(2026, 9, 21)

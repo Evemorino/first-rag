@@ -133,3 +133,21 @@ def test_user_prompt_supports_days_with_no_materials():
     prompt = distill_prompt.build_user_prompt(day_raw)
 
     assert '"materials": []' in prompt
+
+
+def test_user_prompt_serializes_a_missing_timestamp_as_null():
+    """素材没有 ts 时，JSON 里要写 null，而不是当场 AttributeError。
+
+    对应存活的 `if material.ts` → `if (material.ts) or True`：真值兜底被写成
+    恒真，None 就会走到 .isoformat()。这种变异只有"真喂一个 None 进去"的测试
+    杀得掉 —— 其余夹具的素材全都带 ts。
+    """
+    day_raw = DayRaw(
+        day=date(2026, 9, 20),
+        collected_at=datetime(2026, 9, 20, 12, 0, 0),
+        materials=[RawMaterial(source="manual", ref="inbox.md", ts=None,
+                               kind="note", text="没有时间戳的一条")])
+
+    prompt = distill_prompt.build_user_prompt(day_raw)
+
+    assert '"ts": null' in prompt

@@ -3,6 +3,7 @@ git no-op, char cap, snapshot persistence. All in system tmp (constitution V).
 """
 
 import json
+import subprocess
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -283,3 +284,55 @@ def test_gather_keeps_later_plugins_when_an_earlier_discover_raises(dirs, monkey
     day_raw = collect.gather(DAY)
 
     assert [m.text for m in day_raw.materials] == ["still collected"]
+
+
+# --- 变异分诊后剩下的 collect 缺口：git 源的超时与时间戳 ---
+
+
+def test_repo_commits_passes_a_subprocess_timeout(dirs, monkeypatch):
+    """git log 必须带超时；否则一个挂住的仓库会让 sync 永久卡死（NFR-006）。
+
+    对应存活的 `timeout=30` → `timeout=None`：这条在两轮重建里都活着，因为测试
+    只覆盖了"git 失败时降级为 no-op"，从没检查过**有没有**超时。挂住不是异常，
+    是永远不返回，所以 except 分支那条测试根本挡不住它。
+    """
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    (config.CONFIG_DIR / "repos.txt").write_text("~/x\n", encoding="utf-8")
+    monkeypatch.setattr(collect.subprocess, "run", fake_run)
+
+    collect._repo_commits("~/x", DAY)
+
+    assert seen["timeout"] == 30
+
+
+def test_repo_commit_material_carries_the_author_timestamp(dirs, monkeypatch):
+    """提交条目的 ts 必须来自 git 的作者日期，不能是 None。
+
+    对应存活的 `ts=datetime.fromisoformat(ad)` → `ts=None`。ts 是 payload 的
+    date 来源之一，丢了它条目就没有时间归属。
+    """
+    ad = "2026-09-18T10:00:00+08:00"
+    out = f"abc123\x00{ad}\x00subject\x00body\x1e"
+    monkeypatch.setattr(
+        collect.subprocess, "run",
+        lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout=out, stderr=""))
+
+    mats = collect._repo_commits("~/x", DAY)
+
+    assert [m.ts for m in mats] == [datetime.fromisoformat(ad)]
+
+
+def test_iso_returns_none_for_a_missing_timestamp():
+    """`_iso(None)` 必须是 None，不是抛异常。
+
+    对应存活的 `if ts` → `if (ts) or True`：真值兜底被写成恒真，None 就会
+    AttributeError。这种变异只有"喂一个 None 进去"的测试能杀。
+    """
+    assert collect._iso(None) is None
+    assert collect._iso(datetime(2026, 9, 18, 10, tzinfo=TZ)) == \
+        "2026-09-18T10:00:00+08:00"
