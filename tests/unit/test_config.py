@@ -264,3 +264,77 @@ def test_null_retention_means_keep_forever(tmp_path):
     path = _make_schema(tmp_path, set_retention)
 
     assert config.load_schema(path)["raw_retention_days"] is None
+
+
+def test_parallel_workers_missing_rejected(tmp_path):
+    def drop(schema):
+        del schema["distill"]["parallel_workers"]
+
+    path = _make_schema(tmp_path, drop)
+    with pytest.raises(config.ConfigError) as excinfo:
+        config.load_schema(path)
+
+    assert str(excinfo.value) == "schema.distill is missing 'parallel_workers'"
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_parallel_workers_below_one_rejected(tmp_path, value):
+    """并发度必须为正：0 或负数会让蒸馏退化成串行甚至什么都不跑。"""
+    def set_workers(schema):
+        schema["distill"]["parallel_workers"] = value
+
+    path = _make_schema(tmp_path, set_workers)
+    with pytest.raises(config.ConfigError) as excinfo:
+        config.load_schema(path)
+
+    assert str(excinfo.value) == "schema.distill.parallel_workers must be >= 1"
+
+
+def test_answer_max_tokens_missing_rejected(tmp_path):
+    def drop(schema):
+        del schema["retrieval"]["answer_max_tokens"]
+
+    path = _make_schema(tmp_path, drop)
+    with pytest.raises(config.ConfigError) as excinfo:
+        config.load_schema(path)
+
+    assert str(excinfo.value) == "schema.retrieval is missing 'answer_max_tokens'"
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_answer_max_tokens_below_one_rejected(tmp_path, value):
+    """答案长度上限必须为正：0 会让 ask 的答案被截成空。"""
+    def set_tokens(schema):
+        schema["retrieval"]["answer_max_tokens"] = value
+
+    path = _make_schema(tmp_path, set_tokens)
+    with pytest.raises(config.ConfigError) as excinfo:
+        config.load_schema(path)
+
+    assert str(excinfo.value) == "schema.retrieval.answer_max_tokens must be >= 1"
+
+
+def test_disable_thinking_missing_rejected(tmp_path):
+    def drop(schema):
+        del schema["retrieval"]["disable_thinking"]
+
+    path = _make_schema(tmp_path, drop)
+    with pytest.raises(config.ConfigError) as excinfo:
+        config.load_schema(path)
+
+    assert str(excinfo.value) == "schema.retrieval is missing 'disable_thinking'"
+
+
+@pytest.mark.parametrize("value", ["yes", 1, None])
+def test_disable_thinking_must_be_bool(tmp_path, value):
+    """必须是真布尔：字符串 "false" 是真值，会让开关静默失效（最糟的一种）。"""
+    def set_flag(schema):
+        schema["retrieval"]["disable_thinking"] = value
+
+    path = _make_schema(tmp_path, set_flag)
+    with pytest.raises(config.ConfigError) as excinfo:
+        config.load_schema(path)
+
+    assert str(excinfo.value) == (
+        "schema.retrieval.disable_thinking must be a boolean"
+    )

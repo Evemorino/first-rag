@@ -4,6 +4,8 @@
 配置全部来自 .env；密钥和模型 ID 不硬编码在源码中。
 """
 
+from collections.abc import Iterator
+
 from openai import OpenAI
 
 from src import config
@@ -52,24 +54,70 @@ def embed(texts: list[str]) -> list[list[float]]:
     return vectors
 
 
+def _request_options(
+    json_mode: bool, max_tokens: int | None, thinking: bool
+) -> dict[str, object]:
+    """按需拼装可选参数；不给的参数一律不出现在请求里。
+
+    三个参数都用"非默认值才加键"的写法，为的是让默认调用与历史行为逐字节
+    一致（测试用整个调用字典比对来钉住这一点）。尤其 thinking：默认 True 是
+    "什么都不传、让服务端保持原样"，不是"显式打开"。
+    """
+    options: dict[str, object] = {}
+    if json_mode:
+        options["response_format"] = {"type": "json_object"}
+    if max_tokens is not None:
+        options["max_tokens"] = max_tokens
+    if not thinking:
+        options["extra_body"] = {"thinking": {"type": "disabled"}}
+    return options
+
+
 def chat(
     messages: list[dict[str, str]],
     json_mode: bool = False,
+    max_tokens: int | None = None,
+    thinking: bool = True,
 ) -> str:
     """调用 chat completion 接口，并返回助手文本。
 
     json_mode=True 时只向 API 请求 JSON 输出格式；
     JSON 字符串的解析职责留给后续 distill 模块。
-    """
-    request_options: dict[str, object] = {}
-    if json_mode:
-        request_options["response_format"] = {"type": "json_object"}
 
+    max_tokens 默认 None 即不限制（蒸馏要吐完整 JSON，绝不能限长，见 T031
+    的 finish_reason='length' 截断坑）。
+
+    thinking=False 请求服务端跳过思考链。ask 用它把延迟从 ~33s 压到 ~3s；
+    蒸馏不关（同一批素材关掉后条目 9→28，质量差异未经评估）。
+    """
     response = _client().chat.completions.create(
         model=config.env("CHAT_MODEL"),
         messages=messages,
-        **request_options,
+        **_request_options(json_mode, max_tokens, thinking),
     )
 
     # 只返回调用方需要的文本，避免上层依赖 SDK 的完整响应结构。
     return response.choices[0].message.content or ""
+
+
+def chat_stream(
+    messages: list[dict[str, str]],
+    max_tokens: int | None = None,
+    thinking: bool = True,
+) -> Iterator[str]:
+    """流式调用，逐块吐出增量文本（跳过空 delta）。
+
+    不做 json_mode：流式 JSON 要么得边收边解析、要么等于没流式，而需要
+    流式的场景（ask 的回答）本来就是纯文本。
+    """
+    options = _request_options(False, max_tokens, thinking)
+    stream = _client().chat.completions.create(
+        model=config.env("CHAT_MODEL"),
+        messages=messages,
+        stream=True,
+        **options,
+    )
+    for chunk in stream:
+        content = chunk.choices[0].delta.content
+        if content:  # 首尾帧常给空串或 None，原样透出去会多打空行
+            yield content

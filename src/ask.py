@@ -2,6 +2,7 @@
 
 链路：问题嵌入 → similarity.search（payload 过滤：type/date/project）
 → 引用式上下文（`[日期] 类型: 摘要`）→ chat 生成回答。
+引用构建与一跳关联扩展在 `src/ask_expand.py`（本模块把它俩再导出）。
 CLI：python -m src.ask Q="…" [--type X] [--project X]
      [--since 7d|YYYY-MM-DD] [--until …] [--no-expand]（FR-025 面）。
 """
@@ -9,25 +10,19 @@ CLI：python -m src.ask Q="…" [--type X] [--project X]
 from __future__ import annotations
 
 import logging
-import math
 import re
 import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import Sequence
+from typing import Iterator
 
-from qdrant_client import QdrantClient
 from qdrant_client.models import DatetimeRange, FieldCondition, Filter, MatchValue
 
 from src import config, similarity
-from src.ark_client import chat, embed
+from src.ark_client import chat, chat_stream, embed
+from src.ask_expand import Citation, citations_from_hits, expand_neighbors
 
 logger = logging.getLogger(__name__)
-
-
-def _client() -> QdrantClient:
-    """Local Qdrant client for expansion fetches (similarity.py 保持 ★ 不动)."""
-    return QdrantClient(url=config.QDRANT_URL, trust_env=False)
 
 _NO_HITS_GUIDANCE = (
     "库中还没有可回答的内容。先运行 `make sync` 摄入当日素材，"
@@ -35,19 +30,6 @@ _NO_HITS_GUIDANCE = (
 )
 
 _RELATIVE = re.compile(r"^(\d+)d$")
-
-
-@dataclass(frozen=True)
-class Citation:
-    """一条可追溯引用（FR-019：日期、类型、摘要、来源）。"""
-
-    id: str
-    date: str
-    type: str
-    text: str
-    source: str
-    source_refs: list[str]
-    score: float
 
 
 @dataclass
@@ -96,110 +78,29 @@ def build_filters(
     return Filter(must=conditions)
 
 
-def _citations(hits: list[similarity.Hit]) -> list[Citation]:
-    return [
-        Citation(
-            id=h.id,
-            date=h.payload.get("date", ""),
-            type=h.payload.get("type", ""),
-            text=h.payload.get("text", ""),
-            source=h.payload.get("source", ""),
-            source_refs=h.payload.get("source_refs", []),
-            score=h.score,
-        )
-        for h in hits
-    ]
-
-
 def _context_lines(citations: list[Citation], marker: str = "") -> list[str]:
     """`[日期] 类型: 摘要` context lines; marker like 关联补充 tags expansion."""
     tag = f"（{marker}）" if marker else ""
     return [f"[{c.date}] {c.type}{tag}: {c.text}" for c in citations]
 
 
-# --- 关联扩展（T029 / FR-020 / FR-021，AC-005）---
+@dataclass(frozen=True)
+class _Prepared:
+    """一次提问在"该发给 LLM 什么"这一步的全部结果。
 
-
-def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(y * y for y in b))
-    if na == 0 or nb == 0:
-        return 0.0
-    return dot / (na * nb)
-
-
-def _expand_neighbors(
-    hits: list[similarity.Hit],
-    question_vector: Sequence[float],
-    *,
-    mode: str | float | None = None,
-    client: QdrantClient | None = None,
-    collection_name: str | None = None,
-) -> list[Citation]:
-    """一跳关联扩展：主命中的 related 邻居作为「关联补充」进入上下文。
-
-    三模式（FR-020）：off=不扩展；all=全量（受 neighbor_limit_per_hit /
-    context_cap 约束）；数值=阈值，邻居与问题的 cosine ≥ 阈值才纳入。
+    抽出来是为了让 query() 与 query_stream() 共用同一份上下文构建：过滤、
+    关联扩展、引用行格式这三处逻辑一旦复制成两份，改动只会在一条路径上
+    生效，表现为"流式和不流式答得不一样"，且不会有测试变红。
     """
-    expand = config.load_schema()["retrieval"]["expand"]
-    effective = expand["mode"] if mode is None else mode
-    if effective == "off" or not hits:
-        return []
 
-    threshold = None
-    if isinstance(effective, (int, float)):
-        threshold = float(effective)
-    elif expand.get("neighbor_min_score") is not None:
-        threshold = float(expand["neighbor_min_score"])
-
-    seen = {h.id for h in hits}
-    queue: list[str] = []
-    for h in hits:
-        for neighbor_id in h.payload.get("related", [])[: expand["neighbor_limit_per_hit"]]:
-            neighbor_id = str(neighbor_id)
-            if neighbor_id not in seen:
-                seen.add(neighbor_id)
-                queue.append(neighbor_id)
-    queue = queue[: expand["context_cap"]]
-    if not queue:
-        return []
-
-    qdrant = client or _client()
-    # with_vector 仅阈值模式需要；本地（:memory:）模式不支持该参数
-    # （即便传 False 也会报 Unknown arguments），所以按需注入。
-    retrieve_kwargs = {"with_vector": True} if threshold is not None else {}
-    records = qdrant.retrieve(
-        collection_name=collection_name or config.COLLECTION,
-        ids=queue,
-        with_payload=True,
-        **retrieve_kwargs,
-    )
-    expanded = []
-    for record in records:
-        score = 1.0
-        if threshold is not None:
-            score = _cosine(question_vector, record.vector or [])
-            if score < threshold:
-                continue
-        expanded.append(_citation_from_record(record, score))
-    return expanded
+    messages: list[dict[str, str]]
+    citations: list[Citation]
+    expanded: list[Citation]
+    max_tokens: int
+    thinking: bool
 
 
-def _citation_from_record(record, score: float) -> Citation:
-    payload = record.payload or {}
-    return Citation(
-        id=str(record.id),
-        date=payload.get("date", ""),
-        type=payload.get("type", ""),
-        text=payload.get("text", ""),
-        source=payload.get("source", ""),
-        source_refs=payload.get("source_refs", []),
-        score=score,
-    )
-
-
-def query(
+def _prepare(
     question: str,
     *,
     type: str | None = None,
@@ -207,22 +108,21 @@ def query(
     since: str | None = None,
     until: str | None = None,
     expand: bool | None = None,
-) -> Answer:
-    """检索 + 过滤 + 引用式回答（FR-018/019）。expand=None 走配置默认。"""
-    schema = config.load_schema()
-    top_k = schema["retrieval"]["top_k"]
+) -> _Prepared | None:
+    """检索 + 过滤 + 拼 prompt；None 表示无命中（调用方别去问 LLM）。"""
+    retrieval = config.load_schema()["retrieval"]
     filters = build_filters(
         type=type, project=project, since=since, until=until)
 
     vector = embed([question])[0]
-    hits = similarity.search(vector, k=top_k, filters=filters)
+    hits = similarity.search(vector, k=retrieval["top_k"], filters=filters)
     if not hits:
-        return Answer(question=question, text=_NO_HITS_GUIDANCE)
+        return None
 
-    citations = _citations(hits)
+    citations = citations_from_hits(hits)
     expanded_mode = "off" if expand is False else ("all" if expand is True else None)
     try:
-        expanded = _expand_neighbors(hits, vector, mode=expanded_mode)
+        expanded = expand_neighbors(hits, vector, mode=expanded_mode)
     except Exception as e:  # noqa: BLE001 — 扩展失败不拖垮主回答
         logger.warning("ask: neighbor expansion failed, skipped: %s", e)
         expanded = []
@@ -243,31 +143,138 @@ def query(
             "content": f"问题：{question}\n\n学习条目：\n{context}",
         },
     ]
-    answer_text = chat(messages)
+    return _Prepared(
+        messages=messages,
+        citations=citations,
+        expanded=expanded,
+        # 缺键时兜底：校验层已保证存在，这里只是不让 .get 的默认值成为
+        # 唯一防线（schema 被绕过加载时仍能跑）。
+        max_tokens=retrieval.get("answer_max_tokens", 600),
+        thinking=not retrieval.get("disable_thinking", True),
+    )
+
+
+def query(
+    question: str,
+    *,
+    type: str | None = None,
+    project: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    expand: bool | None = None,
+) -> Answer:
+    """检索 + 过滤 + 引用式回答（FR-018/019）。expand=None 走配置默认。"""
+    prepared = _prepare(
+        question, type=type, project=project,
+        since=since, until=until, expand=expand)
+    if prepared is None:
+        return Answer(question=question, text=_NO_HITS_GUIDANCE)
+
+    answer_text = chat(
+        prepared.messages, max_tokens=prepared.max_tokens,
+        thinking=prepared.thinking)
     return Answer(
         question=question, text=answer_text,
-        citations=citations, expanded=expanded)
+        citations=prepared.citations, expanded=prepared.expanded)
+
+
+@dataclass
+class StreamedAnswer:
+    """流式回答的句柄：引用先给（它们来自检索，不必等生成），文本再逐块消费。"""
+
+    question: str
+    citations: list[Citation]
+    expanded: list[Citation]
+    chunks: Iterator[str]
+
+
+def query_stream(
+    question: str,
+    *,
+    type: str | None = None,
+    project: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    expand: bool | None = None,
+) -> StreamedAnswer:
+    """query() 的流式版：同样的检索与 prompt，只是文本逐块产出。
+
+    chunks 是惰性的 —— 调用本函数不发任何生成请求，第一次消费才开始。
+    无命中时不碰 LLM，直接给引导语。
+    """
+    prepared = _prepare(
+        question, type=type, project=project,
+        since=since, until=until, expand=expand)
+    if prepared is None:
+        return StreamedAnswer(
+            question=question, citations=[], expanded=[],
+            chunks=iter([_NO_HITS_GUIDANCE]))
+
+    return StreamedAnswer(
+        question=question,
+        citations=prepared.citations,
+        expanded=prepared.expanded,
+        chunks=chat_stream(
+            prepared.messages, max_tokens=prepared.max_tokens,
+            thinking=prepared.thinking),
+    )
 
 
 # --- CLI ---
 
 
 def _parse_args(argv: list[str]) -> dict:
-    """Parse `Q=…` plus --type/--project/--since/--until/--no-expand."""
+    """Parse `Q=…` plus --type/--project/--since/--until/--no-expand/--stream."""
     opts: dict = {"Q": None, "type": None, "project": None,
-                  "since": None, "until": None, "no-expand": False}
+                  "since": None, "until": None, "no-expand": False,
+                  "stream": False}
     i = 1
     while i < len(argv):
         arg = argv[i]
         if arg.startswith("Q="):
             opts["Q"] = arg[2:]
-        elif arg == "--no-expand":
-            opts["no-expand"] = True
+        elif arg in ("--no-expand", "--stream"):
+            opts[arg[2:]] = True
         elif arg in ("--type", "--project", "--since", "--until"):
             i += 1
             opts[arg[2:]] = argv[i] if i < len(argv) else None
         i += 1
     return opts
+
+
+def _filters(opts: dict) -> dict:
+    """CLI 选项 → query/query_stream 的关键字参数（两条路径共用一份）。"""
+    return {
+        "type": opts["type"],
+        "project": opts["project"],
+        "since": opts["since"],
+        "until": opts["until"],
+        "expand": False if opts["no-expand"] else None,
+    }
+
+
+def _print_citations(citations: list[Citation], expanded: list[Citation]) -> None:
+    if not (citations or expanded):
+        return
+    print("\n引用：")
+    for c in citations:
+        print(f"- [{c.date}] {c.type}: {c.text[:80]}")
+    for c in expanded:
+        print(f"- [{c.date}] {c.type}（关联补充）: {c.text[:80]}")
+
+
+def _run_stream(question: str, filters: dict) -> None:
+    """流式打印正文（边到边打），再补引用清单。
+
+    flush=True 是流式的关键：Python 的 stdout 接管道/重定向时是块缓冲的，
+    不 flush 的话"逐块产出"会被攒成一大块最后才出现 —— 终端里看着像流式，
+    接 `| head` 或写日志时完全不是。
+    """
+    streamed = query_stream(question, **filters)
+    for chunk in streamed.chunks:
+        print(chunk, end="", flush=True)
+    print()
+    _print_citations(streamed.citations, streamed.expanded)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -279,31 +286,21 @@ def main(argv: list[str] | None = None) -> int:
     opts = _parse_args(sys.argv if argv is None else argv)
     if not opts["Q"]:
         print('usage: make ask Q="…" [--type X] [--project X] '
-              '[--since 7d|YYYY-MM-DD] [--until …] [--no-expand]',
+              '[--since 7d|YYYY-MM-DD] [--until …] [--no-expand] [--stream]',
               file=sys.stderr)
         return 2
     try:
-        answer = query(
-            opts["Q"],
-            type=opts["type"],
-            project=opts["project"],
-            since=opts["since"],
-            until=opts["until"],
-            expand=False if opts["no-expand"] else None,
-        )
+        if opts["stream"]:
+            _run_stream(opts["Q"], _filters(opts))
+        else:
+            answer = query(opts["Q"], **_filters(opts))
+            print(answer.text)
+            _print_citations(answer.citations, answer.expanded)
     except Exception:
         logger.exception("ask failed")
         print("检索失败：请确认 `make up`（Qdrant）与 .env（Ark）就绪后重试。",
               file=sys.stderr)
         return 1
-
-    print(answer.text)
-    if answer.citations or answer.expanded:
-        print("\n引用：")
-        for c in answer.citations:
-            print(f"- [{c.date}] {c.type}: {c.text[:80]}")
-        for c in answer.expanded:
-            print(f"- [{c.date}] {c.type}（关联补充）: {c.text[:80]}")
     return 0
 
 

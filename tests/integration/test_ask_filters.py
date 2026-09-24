@@ -11,7 +11,7 @@ import pytest
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
-from src import ask, config, similarity
+from src import ask, ask_expand, config, similarity
 
 TEST_COLLECTION = "learning_memory_test_t030"
 DIM = 3
@@ -60,12 +60,12 @@ def collection(monkeypatch):
 
     monkeypatch.setattr(config, "COLLECTION", TEST_COLLECTION)
     monkeypatch.setattr(similarity, "_client", lambda: client)
-    monkeypatch.setattr(ask, "_client", lambda: client)
+    monkeypatch.setattr(ask_expand, "_client", lambda: client)
     monkeypatch.setattr(ask, "embed",
                         lambda texts: [[1.0, 0.0, 0.0]])
     captured = {}
 
-    def fake_chat(messages, json_mode=False):
+    def fake_chat(messages, json_mode=False, max_tokens=None, thinking=True):
         captured["user"] = messages[-1]["content"]
         return "回答 [2026-09-18]"
 

@@ -57,7 +57,8 @@ def env(name: str) -> str:
 
 _DISTILL_KEYS = ("include_signals", "exclude_signals", "examples",
                  "novelty_threshold", "max_entries_per_day",
-                 "struggle_rounds", "max_raw_chars", "batch_max_chars")
+                 "struggle_rounds", "max_raw_chars", "batch_max_chars",
+                 "parallel_workers")
 _EXPAND_KEYS = ("mode", "neighbor_limit_per_hit", "context_cap")
 
 
@@ -115,11 +116,22 @@ def _validate_distill(distill: object) -> None:
         raise ConfigError("schema.distill.max_entries_per_day must be >= 1")
     if distill["batch_max_chars"] < 1:
         raise ConfigError("schema.distill.batch_max_chars must be >= 1")
+    if distill["parallel_workers"] < 1:
+        raise ConfigError("schema.distill.parallel_workers must be >= 1")
 
 
 def _validate_retrieval(retrieval: object) -> None:
     if not isinstance(retrieval, dict) or "top_k" not in retrieval:
         raise ConfigError("schema.retrieval must contain 'top_k'")
+    if "answer_max_tokens" not in retrieval:
+        raise ConfigError("schema.retrieval is missing 'answer_max_tokens'")
+    if retrieval["answer_max_tokens"] < 1:
+        raise ConfigError("schema.retrieval.answer_max_tokens must be >= 1")
+    if "disable_thinking" not in retrieval:
+        raise ConfigError("schema.retrieval is missing 'disable_thinking'")
+    if not isinstance(retrieval["disable_thinking"], bool):
+        raise ConfigError(
+            "schema.retrieval.disable_thinking must be a boolean")
     _validate_expand(retrieval.get("expand"))
 
 

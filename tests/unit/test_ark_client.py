@@ -37,15 +37,49 @@ class FakeChatCompletions:
         return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
 
+class FakeStreamChatCompletions(FakeChatCompletions):
+    """流式版：create 返回一个 chunk 可迭代对象，而不是完整响应。
+
+    故意混进空串与 None：真实流里首尾经常吐空 delta（role 帧、收尾帧），
+    上层不该把它们当成"有内容"而多打印空行。
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.deltas = ["Hel", "", None, "lo", " world"]
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+
+        def gen():
+            for delta in self.deltas:
+                yield SimpleNamespace(
+                    choices=[SimpleNamespace(
+                        delta=SimpleNamespace(content=delta))])
+
+        return gen()
+
+
 class FakeClient:
     def __init__(self):
         self.embeddings = FakeEmbeddings()
         self.chat = SimpleNamespace(completions=FakeChatCompletions())
 
 
+class FakeStreamClient(FakeClient):
+    def __init__(self):
+        super().__init__()
+        self.chat = SimpleNamespace(completions=FakeStreamChatCompletions())
+
+
 @pytest.fixture
 def fake_client():
     return FakeClient()
+
+
+@pytest.fixture
+def fake_stream_client():
+    return FakeStreamClient()
 
 
 @pytest.fixture
@@ -160,4 +194,95 @@ def test_chat_defaults_to_plain_text_when_json_mode_is_omitted(
     # 整个调用字典都比对：多一个 response_format 就会失败
     assert fake_client.chat.completions.calls == [
         {"model": "test-chat-model", "messages": messages}
+    ]
+
+
+def test_chat_forwards_max_tokens_when_provided(fake_client, ark_env, monkeypatch):
+    """max_tokens 显式传入时透传给 SDK，用于 ask 的限长回答。
+
+    默认 None 时整个调用字典里不能冒出 max_tokens —— 那会改变所有不传参的
+    调用方（蒸馏的 json_mode 路径尤其不能限长，见 T031 截断坑），已由上面
+    test_chat_defaults_to_plain_text... 的全字典比对间接钉住。
+    """
+    monkeypatch.setattr(ark_client, "_client", lambda: fake_client)
+    messages = [{"role": "user", "content": "hello"}]
+
+    ark_client.chat(messages, max_tokens=600)
+
+    assert fake_client.chat.completions.calls == [
+        {"model": "test-chat-model", "messages": messages, "max_tokens": 600}
+    ]
+
+
+def test_chat_disables_thinking_when_asked(fake_client, ark_env, monkeypatch):
+    """thinking=False 时用 extra_body 关掉模型的思考链。
+
+    这是 ask 延迟的真正杠杆：2026-09-25 实测同一个 doubao-seed-2.1-lite，
+    思考开着 33.4s、关掉 1.6–4.1s（12×），而引用标记照常正确。原因是响应里
+    一直带着 reasoning_content —— 首 token 前要先想完，思考长度与答案长度
+    无关，所以此前"限长压耗时"的思路（max_tokens）根本够不着它。
+    """
+    monkeypatch.setattr(ark_client, "_client", lambda: fake_client)
+    messages = [{"role": "user", "content": "hello"}]
+
+    ark_client.chat(messages, thinking=False)
+
+    assert fake_client.chat.completions.calls == [
+        {
+            "model": "test-chat-model",
+            "messages": messages,
+            "extra_body": {"thinking": {"type": "disabled"}},
+        }
+    ]
+
+
+def test_chat_leaves_thinking_on_by_default(fake_client, ark_env, monkeypatch):
+    """默认不碰 thinking —— 蒸馏依赖它，关掉会改变抽取质量。
+
+    实测同一批 126k 字符素材：思考开 9 条 / 关 28 条。条目更多不等于更好
+    （蒸馏是质量敏感环节），所以默认必须是"什么都不传"，让服务端保持原样；
+    只有显式 thinking=False 的调用方（ask）才关。
+    """
+    monkeypatch.setattr(ark_client, "_client", lambda: fake_client)
+    messages = [{"role": "user", "content": "hello"}]
+
+    ark_client.chat(messages)
+
+    assert fake_client.chat.completions.calls == [
+        {"model": "test-chat-model", "messages": messages}
+    ]
+
+
+def test_chat_stream_yields_content_deltas_in_order(fake_stream_client, ark_env, monkeypatch):
+    """流式接口逐块吐出增量文本，顺序与到达顺序一致。
+
+    空串与 None 的 delta 必须被丢掉：真实流的首尾帧经常是空的，原样交给
+    CLI 会打出多余空行，交给 SSE 会多推空事件。
+    """
+    monkeypatch.setattr(ark_client, "_client", lambda: fake_stream_client)
+    messages = [{"role": "user", "content": "hello"}]
+
+    chunks = list(ark_client.chat_stream(messages))
+
+    assert chunks == ["Hel", "lo", " world"]
+    assert fake_stream_client.chat.completions.calls == [
+        {"model": "test-chat-model", "messages": messages, "stream": True}
+    ]
+
+
+def test_chat_stream_forwards_max_tokens_and_thinking(fake_stream_client, ark_env, monkeypatch):
+    """流式的 max_tokens / thinking 与一次性接口同义，不能各自为政。"""
+    monkeypatch.setattr(ark_client, "_client", lambda: fake_stream_client)
+    messages = [{"role": "user", "content": "hello"}]
+
+    list(ark_client.chat_stream(messages, max_tokens=600, thinking=False))
+
+    assert fake_stream_client.chat.completions.calls == [
+        {
+            "model": "test-chat-model",
+            "messages": messages,
+            "stream": True,
+            "max_tokens": 600,
+            "extra_body": {"thinking": {"type": "disabled"}},
+        }
     ]

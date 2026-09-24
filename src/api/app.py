@@ -6,16 +6,20 @@
 - POST /sync         后台线程跑 sync.run（互斥由 data/.sync.lock 保证，
                      防 cron 与 API 并发，F2）；GET /sync/status 查进度
 - GET  /ask          检索问答（与 CLI 共用 src.ask.query）
+- GET  /ask/stream   同上但 SSE 流式（共用 src.ask.query_stream）
 """
 
 from __future__ import annotations
 
+import json
 import threading
+from collections.abc import Iterator
 from dataclasses import asdict
 from datetime import date as date_type
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from src import ask, config, log, sync
@@ -122,3 +126,53 @@ def get_ask(
         "citations": [asdict(c) for c in answer.citations],
         "expanded": [asdict(c) for c in answer.expanded],
     }
+
+
+def _sse(event: str, payload: dict) -> str:
+    """一条 SSE 消息。json.dumps 顺带把换行转义掉，不会撕裂 data 行。"""
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _stream_events(streamed: ask.StreamedAnswer) -> Iterator[str]:
+    """引用 → 正文块 → done；生成中途出错则补一个 error 事件。
+
+    这里不能抛异常：响应头（200）早就发出去了，异常只会表现为连接被切断，
+    客户端既拿不到已收到的正文，也不知道为什么断。前端约定收到 done 才算
+    完整回答，收到 error 则展示已有部分 + 失败原因。
+    """
+    yield _sse("citations", {
+        "citations": [asdict(c) for c in streamed.citations],
+        "expanded": [asdict(c) for c in streamed.expanded],
+    })
+    try:
+        for chunk in streamed.chunks:
+            yield _sse("chunk", {"text": chunk})
+    except Exception as exc:  # noqa: BLE001 — 见 docstring：只能转成事件
+        yield _sse("error", {"message": f"{type(exc).__name__}: {exc}"})
+        return
+    yield _sse("done", {})
+
+
+@app.get("/ask/stream")
+def get_ask_stream(
+    q: str,
+    type: str | None = None,
+    project: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    expand: bool | None = None,
+) -> StreamingResponse:
+    """SSE 版检索问答。检索阶段失败给正常 502；生成阶段失败走 error 事件。"""
+    try:
+        streamed = ask.query_stream(q, type=type, project=project,
+                                   since=since, until=until, expand=expand)
+    except Exception as exc:  # noqa: BLE001 — 与 /ask 的 502 文案保持一致
+        raise HTTPException(
+            502, f"ask failed: {exc}; check `make up` (Qdrant) and .env"
+        ) from exc
+
+    return StreamingResponse(
+        _stream_events(streamed),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

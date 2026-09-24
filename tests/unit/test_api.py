@@ -4,11 +4,13 @@
 单测与集成测试覆盖。
 """
 
+import json
 from datetime import date
 
 import pytest
 from fastapi.testclient import TestClient
 
+from src import ask as ask_module
 from src.api import app as app_module
 from src.api.app import app, _sync_state
 from src.ask import Answer, Citation
@@ -100,3 +102,104 @@ def test_ask_translates_failure_to_502(client, monkeypatch):
     monkeypatch.setattr(app_module.ask, "query", boom)
 
     assert client.get("/ask", params={"q": "x"}).status_code == 502
+
+
+# --- GET /ask/stream（SSE）---
+
+
+def _sse_events(body: str) -> list[tuple[str, str]]:
+    """把 SSE 正文解析成 (event, data) 列表，忽略心跳/空行。"""
+    events = []
+    for block in body.split("\n\n"):
+        name, data = None, None
+        for line in block.splitlines():
+            if line.startswith("event: "):
+                name = line[7:]
+            elif line.startswith("data: "):
+                data = line[6:]
+        if name and data is not None:
+            events.append((name, data))
+    return events
+
+
+def test_ask_stream_emits_citations_then_chunks_then_done(client, monkeypatch):
+    """SSE 契约：引用先给（来自检索，不必等生成），再逐块正文，最后 done。
+
+    引用事件放在最前是有意的：客户端可以先渲染出"依据了哪几条"，用户
+    在等第一个字的时候就有东西看 —— 这正是流式要解决的问题。
+    """
+    citation = Citation(id="i", date="2026-09-18", type="error",
+                        text="boom", source="claude_code",
+                        source_refs=["s"], score=0.9)
+    monkeypatch.setattr(
+        app_module.ask, "query_stream",
+        lambda q, **kw: ask_module.StreamedAnswer(
+            question=q, citations=[citation], expanded=[],
+            chunks=iter(["409 的", "根因是维度不匹配"])))
+
+    response = client.get("/ask/stream", params={"q": "踩过什么坑"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = _sse_events(response.text)
+    assert [name for name, _ in events] == ["citations", "chunk", "chunk", "done"]
+
+    cited = json.loads([d for n, d in events if n == "citations"][0])
+    chunks = [json.loads(d)["text"] for n, d in events if n == "chunk"]
+    assert cited["citations"][0]["date"] == "2026-09-18"
+    assert cited["citations"][0]["type"] == "error"
+    assert chunks == ["409 的", "根因是维度不匹配"]
+
+
+def test_ask_stream_reports_generation_failure_as_an_event(client, monkeypatch):
+    """生成中途失败时 HTTP 状态码已经发出去了，只能用一个 error 事件收场。
+
+    若这里抛异常，客户端看到的是"连接被切断"——它既不知道失败了，也拿不到
+    已收到的部分和失败原因。
+    """
+    def broken_chunks():
+        yield "部分回答"
+        raise RuntimeError("ark 半路断了")
+
+    monkeypatch.setattr(
+        app_module.ask, "query_stream",
+        lambda q, **kw: ask_module.StreamedAnswer(
+            question=q, citations=[], expanded=[], chunks=broken_chunks()))
+
+    response = client.get("/ask/stream", params={"q": "x"})
+
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    # citations 帧照发（此时为空），随后是已产出的正文块，最后以 error 收场
+    assert [name for name, _ in events] == ["citations", "chunk", "error"]
+    assert json.loads(events[-2][1])["text"] == "部分回答"
+    assert "ark 半路断了" in json.loads(events[-1][1])["message"]
+
+
+def test_ask_stream_translates_retrieval_failure_to_502(client, monkeypatch):
+    """检索阶段就失败（还没开始流）时必须给正常的 502，而不是空流。"""
+    def boom(*a, **k):
+        raise RuntimeError("ark down")
+    monkeypatch.setattr(app_module.ask, "query_stream", boom)
+
+    assert client.get("/ask/stream", params={"q": "x"}).status_code == 502
+
+
+def test_ask_stream_requires_q(client):
+    assert client.get("/ask/stream").status_code == 422
+
+
+def test_ask_stream_forwards_filters(client, monkeypatch):
+    """过滤参数漏传会让流式回答混进不符合条件的条目。"""
+    calls = []
+    monkeypatch.setattr(
+        app_module.ask, "query_stream",
+        lambda q, **kw: calls.append((q, kw)) or ask_module.StreamedAnswer(
+            question=q, citations=[], expanded=[], chunks=iter([])))
+
+    client.get("/ask/stream", params={
+        "q": "x", "type": "error", "project": "first-rag",
+        "since": "7d", "expand": False})
+
+    assert calls == [("x", {"type": "error", "project": "first-rag",
+                            "since": "7d", "until": None, "expand": False})]

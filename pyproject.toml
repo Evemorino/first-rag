@@ -9,6 +9,7 @@ dependencies = [
     "fastapi",
     "uvicorn",
     "python-dotenv",
+    "socksio>=1.0.0",
 ]
 
 [dependency-groups]
@@ -68,6 +69,12 @@ source_paths = ["src/"]
 # 这一类。没加 secret_patterns —— 它只有模块级的正则常量、零个函数，mutmut
 # 生不出变异体，加进去只会让"文件数"看着涨了而数字没动。
 #
+# 2026-09-25 加进 ask_expand：ask.py 撞了 size 门禁（315 > 300 SLOC），把
+# 引用构建与一跳关联扩展整块搬了出去。**搬迁不等于缩小打击面** —— 这些函数
+# 原本在 only_mutate 的 ask.py 里被变异过，不把新文件登记进来，同一批变异体
+# 会随搬家一起消失，而总数、覆盖率都不会报错（mutmut 只统计它扫过的文件）。
+# 新增文件后必须重建 mutants/，见上面那条注释。
+#
 # 注意：加文件进去必须**整个重建** mutants/（`mv mutants /tmp/…`），
 # mutmut 3.x 不会为新增文件补生成变异体（连 collect 子命令都没有），
 # 不然你会以为覆盖扩大了，其实数字没动。
@@ -80,6 +87,7 @@ only_mutate = [
     "src/sync.py",
     "src/sanitize.py",
     "src/ask.py",
+    "src/ask_expand.py",
     "src/collect.py",
     "src/distill.py",
     "src/distill_batches.py",

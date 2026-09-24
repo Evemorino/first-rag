@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src import ask
+from src import ask, ask_expand
 from src.similarity import Hit
 
 SCHEMA = {
@@ -62,7 +62,7 @@ def test_expand_all_adds_neighbors_as_related_supplement(schema):
         point("n1", "neighbor one"), point("n2", "neighbor two")])
     hits = [hit("h1", ["n1", "n2"]), hit("h2", ["n1"])]
 
-    expanded = ask._expand_neighbors(hits, [0.1, 0.2], client=client,
+    expanded = ask_expand.expand_neighbors(hits, [0.1, 0.2], client=client,
                                      collection_name="c")
 
     assert [c.id for c in expanded] == ["n1", "n2"]  # 去重
@@ -76,7 +76,7 @@ def test_expand_off_returns_empty(schema):
     client = FakeClient([point("n1", "x")])
     hits = [hit("h1", ["n1"])]
 
-    assert ask._expand_neighbors(
+    assert ask_expand.expand_neighbors(
         hits, [0.1], mode="off", client=client, collection_name="c") == []
     assert client.requested == []
 
@@ -90,7 +90,7 @@ def test_expand_threshold_filters_by_cosine_to_question(
     ])
     hits = [hit("h1", ["n1", "n2"])]
 
-    expanded = ask._expand_neighbors(
+    expanded = ask_expand.expand_neighbors(
         hits, [1.0, 0.0], mode=0.5, client=client, collection_name="c")
 
     assert [c.id for c in expanded] == ["n1"]
@@ -101,7 +101,7 @@ def test_expand_respects_per_hit_limit_and_cap(schema):
         point("n1", "a"), point("n2", "b"), point("n3", "c")])
     hits = [hit("h1", ["n1", "n2", "n3"])]  # limit_per_hit=2 → n1,n2
 
-    expanded = ask._expand_neighbors(
+    expanded = ask_expand.expand_neighbors(
         hits, [0.1], client=client, collection_name="c")
 
     assert [c.id for c in expanded] == ["n1", "n2"]
@@ -111,9 +111,11 @@ def test_query_no_expand_flag_skips_expansion(schema, monkeypatch):
     monkeypatch.setattr(ask, "embed", lambda texts: [[0.1, 0.2]])
     monkeypatch.setattr(ask.similarity, "search", lambda *a, **k: [
         hit("h1", ["n1"])])
-    monkeypatch.setattr(ask, "chat", lambda messages, json_mode=False: "ans")
+    monkeypatch.setattr(
+        ask, "chat",
+        lambda messages, json_mode=False, max_tokens=None, thinking=True: "ans")
     boom = FakeClient([])
-    monkeypatch.setattr(ask, "_client", lambda: boom)
+    monkeypatch.setattr(ask_expand, "_client", lambda: boom)
 
     answer = ask.query("q", expand=False)
 
@@ -124,7 +126,7 @@ def test_query_no_expand_flag_skips_expansion(schema, monkeypatch):
 def test_query_context_includes_related_marker(schema, monkeypatch):
     captured = {}
 
-    def fake_chat(messages, json_mode=False):
+    def fake_chat(messages, json_mode=False, max_tokens=None, thinking=True):
         captured["user"] = messages[-1]["content"]
         return "ans"
 
@@ -132,7 +134,7 @@ def test_query_context_includes_related_marker(schema, monkeypatch):
     monkeypatch.setattr(ask.similarity, "search", lambda *a, **k: [
         hit("h1", ["n1"], text="primary entry")])
     monkeypatch.setattr(ask, "chat", fake_chat)
-    monkeypatch.setattr(ask, "_client", lambda: FakeClient(
+    monkeypatch.setattr(ask_expand, "_client", lambda: FakeClient(
         [point("n1", "neighbor entry")]))
 
     answer = ask.query("q")

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src import ask, config, similarity
+from src import ask, ask_expand, config, similarity
 from src.similarity import Hit
 
 SCHEMA = {
@@ -16,6 +16,8 @@ SCHEMA = {
     "distill": {},
     "retrieval": {
         "top_k": 8,
+        "answer_max_tokens": 600,
+        "disable_thinking": True,
         "expand": {
             "mode": "all",
             "neighbor_limit_per_hit": 2,
@@ -96,12 +98,12 @@ def test_build_filters_none_when_no_filters():
 
 
 def test_cosine_identical_orthogonal_and_diagonal():
-    assert ask._cosine([1.0, 0.0], [1.0, 0.0]) == pytest.approx(1.0)
-    assert ask._cosine([1.0, 0.0], [0.0, 1.0]) == pytest.approx(0.0)
-    assert ask._cosine([1.0, 1.0], [1.0, 0.0]) == pytest.approx(0.7071, abs=1e-4)
+    assert ask_expand._cosine([1.0, 0.0], [1.0, 0.0]) == pytest.approx(1.0)
+    assert ask_expand._cosine([1.0, 0.0], [0.0, 1.0]) == pytest.approx(0.0)
+    assert ask_expand._cosine([1.0, 1.0], [1.0, 0.0]) == pytest.approx(0.7071, abs=1e-4)
     # 两个向量的模都不为 1：只有这样才能区分 dot/(na*nb) 与 dot/(na/nb)
     # —— 取单位向量时两者结果相同，变异体就溜过去了。
-    assert ask._cosine([3.0, 4.0], [4.0, 3.0]) == pytest.approx(24 / 25)
+    assert ask_expand._cosine([3.0, 4.0], [4.0, 3.0]) == pytest.approx(24 / 25)
 
 
 def test_cosine_zero_vector_scores_zero_not_one():
@@ -110,8 +112,8 @@ def test_cosine_zero_vector_scores_zero_not_one():
     返回 1.0 会让空向量被当成"完全相关"，把一堆无关邻居塞进上下文；而判空
     用的是 `or`（任一方为零向量即退化），不是 `and`。
     """
-    assert ask._cosine([0.0, 0.0], [1.0, 2.0]) == 0.0
-    assert ask._cosine([1.0, 2.0], [0.0, 0.0]) == 0.0
+    assert ask_expand._cosine([0.0, 0.0], [1.0, 2.0]) == 0.0
+    assert ask_expand._cosine([1.0, 2.0], [0.0, 0.0]) == 0.0
 
 
 # --- payload 缺字段时引用的默认值 ---
@@ -119,7 +121,7 @@ def test_cosine_zero_vector_scores_zero_not_one():
 
 
 def test_citations_default_missing_payload_keys_to_empty():
-    citation = ask._citations([hit({})])[0]
+    citation = ask_expand.citations_from_hits([hit({})])[0]
     assert citation.date == ""
     assert citation.type == ""
     assert citation.text == ""
@@ -129,7 +131,7 @@ def test_citations_default_missing_payload_keys_to_empty():
 
 def test_citation_from_record_defaults_missing_payload_keys():
     record = SimpleNamespace(id="n1", vector=[1.0, 0.0], payload={})
-    citation = ask._citation_from_record(record, 0.5)
+    citation = ask_expand._citation_from_record(record, 0.5)
     assert (citation.date, citation.type, citation.text) == ("", "", "")
     assert (citation.source, citation.source_refs) == ("", [])
 
@@ -141,7 +143,7 @@ def test_citations_passes_through_score_and_source_refs():
     （都返回默认值），只有字段真的存在才看得出区别：引用会安静地丢掉来源，
     而引用正是这个功能唯一的可追溯性保证（FR-019）。
     """
-    citation = ask._citations([hit(
+    citation = ask_expand.citations_from_hits([hit(
         {"date": "2026-09-18", "type": "error", "text": "boom",
          "source": "claude_code", "source_refs": ["s1", "s2"]},
         score=0.42)])[0]
@@ -155,7 +157,7 @@ def test_citation_from_record_passes_through_score_and_source_refs():
         id="n1", vector=[1.0, 0.0],
         payload={"date": "2026-09-18", "type": "error", "text": "boom",
                  "source": "codex", "source_refs": ["r1"]})
-    citation = ask._citation_from_record(record, 0.75)
+    citation = ask_expand._citation_from_record(record, 0.75)
     assert citation.score == pytest.approx(0.75)
     assert citation.source == "codex"
     assert citation.source_refs == ["r1"]
@@ -188,8 +190,10 @@ def pipeline_fakes(monkeypatch):
                  "source_refs": ["r1"], "related": []}, id="id-2"),
         ]
 
-    def fake_chat(messages, json_mode=False):
+    def fake_chat(messages, json_mode=False, max_tokens=None, thinking=True):
         captured["messages"] = messages
+        captured["max_tokens"] = max_tokens
+        captured["thinking"] = thinking
         return "409 的根因是维度不匹配 [2026-09-18]。"
 
     monkeypatch.setattr(ask, "embed", fake_embed)
@@ -239,6 +243,119 @@ def test_query_sends_well_formed_chat_messages(pipeline_fakes, schema):
             in messages[-1]["content"])
 
 
+def test_query_limits_answer_length(pipeline_fakes, schema):
+    """回答的 chat 必须带上 answer_max_tokens，给答案长度一个确定上限。
+
+    注意别把这条测成"限长就能压耗时"：2026-09-25 实测 max_tokens 拉到 30
+    仍要 38s，瓶颈是模型首 token 延迟（TTFT ~20–40s），不是答案长度。
+    限长的真实价值是**上界可预期**（不会突然吐一篇长文）。
+    """
+    ask.query("问题")
+
+    assert pipeline_fakes["max_tokens"] == 600
+
+
+def test_query_disables_thinking(pipeline_fakes, schema):
+    """retrieval.disable_thinking=true 时，ask 必须把 thinking=False 传下去。
+
+    这才是 ask 延迟的杠杆：同模型同日实测思考开着 33.4s、关掉 1.6–4.1s。
+    默认值这里回读的是 False —— 若哪天有人把默认翻成 True，这条会红。
+    """
+    ask.query("问题")
+
+    assert pipeline_fakes["thinking"] is False
+
+
+def test_query_keeps_thinking_when_config_disables_the_switch(
+    pipeline_fakes, schema, monkeypatch
+):
+    """配置关掉开关时必须传 thinking=True，而不是省略参数。
+
+    省略会让 fake 的默认值兜底成 True，看起来也是绿的 —— 但真实调用里
+    省略等于"不传 extra_body"，语义恰好也对，所以这条测的是**我们发出的
+    意图**：配置怎么说，就怎么传。
+    """
+    monkeypatch.setitem(SCHEMA["retrieval"], "disable_thinking", False)
+
+    ask.query("问题")
+
+    assert pipeline_fakes["thinking"] is True
+
+
+# --- query_stream() ---
+
+
+@pytest.fixture
+def stream_fakes(monkeypatch):
+    """把 chat/chat_stream 都换成假的，分别记录各自收到的 messages 与参数。"""
+    captured = {}
+
+    monkeypatch.setattr(ask, "embed", lambda texts: [[0.1, 0.2, 0.3]])
+    monkeypatch.setattr(ask.similarity, "search", lambda *a, **k: [
+        hit({"text": "Qdrant upsert 409 root cause", "date": "2026-09-18",
+             "type": "error", "source": "claude_code",
+             "source_refs": ["s1"], "related": []})])
+
+    def fake_chat_stream(messages, max_tokens=None, thinking=True):
+        captured["stream_messages"] = messages
+        captured["messages"] = messages
+        captured["max_tokens"] = max_tokens
+        captured["thinking"] = thinking
+        return iter(["409 的根因", "是维度不匹配", " [2026-09-18]。"])
+
+    def fake_chat(messages, json_mode=False, max_tokens=None, thinking=True):
+        captured["sync_messages"] = messages
+        return "409 的根因是维度不匹配 [2026-09-18]。"
+
+    monkeypatch.setattr(ask, "chat_stream", fake_chat_stream)
+    monkeypatch.setattr(ask, "chat", fake_chat)
+    return captured
+
+
+def test_query_stream_yields_chunks_in_order_and_exposes_citations(stream_fakes, schema):
+    """流式查询：引用立刻可读，文本逐块产出，顺序即生成顺序。"""
+    streamed = ask.query_stream("我在 qdrant 上踩过什么坑？")
+
+    assert [c.type for c in streamed.citations] == ["error"]
+    assert list(streamed.chunks) == ["409 的根因", "是维度不匹配", " [2026-09-18]。"]
+    assert stream_fakes["stream_messages"][-1]["content"].startswith("问题：")
+    assert stream_fakes["thinking"] is False  # 走配置，与 query() 同源
+    assert stream_fakes["max_tokens"] == 600
+
+
+def test_query_stream_reports_no_hits_without_calling_the_llm(monkeypatch, schema):
+    """无命中时不能去问 LLM：直接给引导语，且不产生任何 API 调用。
+
+    这条是"花了钱却没结果"的守卫 —— 检索为空还发一次 chat，用户等 3 秒
+    拿到一句模型编的废话，比直接说"库里没有"差得多。
+    """
+    monkeypatch.setattr(ask, "embed", lambda texts: [[0.1, 0.2, 0.3]])
+    monkeypatch.setattr(ask.similarity, "search", lambda *a, **k: [])
+
+    def boom(*a, **k):
+        raise AssertionError("no hits must not call the LLM")
+
+    monkeypatch.setattr(ask, "chat_stream", boom)
+
+    streamed = ask.query_stream("库里没有的问题")
+
+    assert streamed.citations == []
+    assert "".join(streamed.chunks) == ask._NO_HITS_GUIDANCE
+
+
+def test_query_and_query_stream_build_the_same_messages(stream_fakes, schema):
+    """两条路径（一次性 / 流式）必须发出同一个 prompt，否则会悄悄漂移。
+
+    这不是形式主义：上下文构建包含过滤、关联扩展、引用行格式三处逻辑，
+    复制一份到 query_stream 里，任何一处改动都只会在一条路径上生效 ——
+    表现为"流式答得不一样"，而且没有任何测试会红。
+    """
+    ask.query("同一个问题")
+    ask.query_stream("同一个问题")
+
+    assert stream_fakes["stream_messages"] == stream_fakes["sync_messages"]
+
+
 def test_query_includes_expanded_neighbors(pipeline_fakes, monkeypatch):
     """关联补充要真的进到回答里 —— 这条链路此前只测过 _expand_neighbors 本身。
 
@@ -255,7 +372,7 @@ def test_query_includes_expanded_neighbors(pipeline_fakes, monkeypatch):
              "source": "claude_code", "source_refs": ["s1"],
              "related": ["n1"]})])
     monkeypatch.setattr(
-        ask, "_client",
+        ask_expand, "_client",
         lambda: FakeRetrieveClient([
             record("n1", [1.0, 0.0], text="邻居条目", date="2026-09-19",
                    type="progress", source="codex", source_refs=["r1"])]))
@@ -267,13 +384,21 @@ def test_query_includes_expanded_neighbors(pipeline_fakes, monkeypatch):
 
 def test_query_survives_expansion_failure(pipeline_fakes, schema, monkeypatch):
     """关联扩展炸了不能拖垮主回答（FR-021 的降级路径）。"""
+    calls = []
+
     def boom(*args, **kwargs):
+        calls.append(args)
         raise RuntimeError("qdrant retrieve down")
 
-    monkeypatch.setattr(ask, "_expand_neighbors", boom)
+    # 打在 ask 上而非 ask_expand 上：ask.py 是 `from src.ask_expand import
+    # expand_neighbors`，名字在 import 时就绑进了 ask 的命名空间，打在
+    # ask_expand 上不会生效。下面那句 calls 断言就是为这个设的 ——
+    # 没有它，替换失效时 expanded 照样是 []，用例会静默变绿。
+    monkeypatch.setattr(ask, "expand_neighbors", boom)
 
     answer = ask.query("问题", expand=True)
 
+    assert len(calls) == 1             # 确实走到了扩展，替换没被换空
     assert answer.expanded == []       # 降级成空列表，不是 None
     assert answer.text.startswith("409")
     assert len(answer.citations) == 2  # 主命中不受影响
@@ -309,7 +434,7 @@ def test_query_maps_expand_flag_to_mode(pipeline_fakes, schema, monkeypatch):
     """
     modes = []
     monkeypatch.setattr(
-        ask, "_expand_neighbors",
+        ask, "expand_neighbors",
         lambda hits, vector, mode=None, **kwargs: modes.append(mode) or [])
 
     ask.query("问题", expand=False)
@@ -361,7 +486,7 @@ def test_expand_neighbors_skips_below_threshold_without_stopping(schema):
     ])
     hits = [hit({"related": ["n-below", "n-above"]})]
 
-    expanded = ask._expand_neighbors(hits, [1.0, 0.0], mode=0.5, client=client)
+    expanded = ask_expand.expand_neighbors(hits, [1.0, 0.0], mode=0.5, client=client)
 
     assert [c.id for c in expanded] == ["n-above"]
 
@@ -375,7 +500,7 @@ def test_expand_neighbors_keeps_neighbor_exactly_at_threshold(schema):
     hits = [hit({"related": ["n1"]})]
 
     # cosine([1,0],[2,0]) 正好 1.0，阈值也设 1.0
-    expanded = ask._expand_neighbors(hits, [1.0, 0.0], mode=1.0, client=client)
+    expanded = ask_expand.expand_neighbors(hits, [1.0, 0.0], mode=1.0, client=client)
 
     assert [c.id for c in expanded] == ["n1"]
 
@@ -383,7 +508,7 @@ def test_expand_neighbors_keeps_neighbor_exactly_at_threshold(schema):
 def test_expand_neighbors_tolerates_hits_without_related_key(schema):
     """payload 里没有 related 是正常情况（多数条目还没做关联），不能炸。"""
     client = FakeRetrieveClient([])
-    assert ask._expand_neighbors(
+    assert ask_expand.expand_neighbors(
         [hit({})], [1.0, 0.0], mode=0.5, client=client) == []
 
 
@@ -399,7 +524,7 @@ def test_expand_neighbors_must_fetch_vectors_when_scoring(schema):
     ])
     hits = [hit({"related": ["n1"]})]
 
-    expanded = ask._expand_neighbors(hits, [1.0, 0.0], mode=0.5, client=client)
+    expanded = ask_expand.expand_neighbors(hits, [1.0, 0.0], mode=0.5, client=client)
 
     assert [c.id for c in expanded] == ["n1"]
 
@@ -412,7 +537,7 @@ def test_expand_neighbors_scores_with_the_question_vector(schema):
     ])
     hits = [hit({"related": ["n1"]})]
 
-    expanded = ask._expand_neighbors(hits, [4.0, 3.0], mode=0.1, client=client)
+    expanded = ask_expand.expand_neighbors(hits, [4.0, 3.0], mode=0.1, client=client)
 
     assert [c.id for c in expanded] == ["n1"]
     assert expanded[0].score == pytest.approx(24 / 25)
@@ -426,7 +551,7 @@ def test_expand_neighbors_marks_unscored_neighbors_as_full_score(schema):
     ])
     hits = [hit({"related": ["n1"]})]
 
-    expanded = ask._expand_neighbors(hits, [1.0, 0.0], mode="all", client=client)
+    expanded = ask_expand.expand_neighbors(hits, [1.0, 0.0], mode="all", client=client)
 
     assert expanded[0].score == 1.0
 
@@ -446,7 +571,7 @@ def test_expand_neighbors_off_mode_comes_from_the_schema(monkeypatch):
                type="error", source="codex", source_refs=[]),
     ])
 
-    expanded = ask._expand_neighbors(
+    expanded = ask_expand.expand_neighbors(
         [hit({"related": ["n1"]})], [1.0, 0.0], client=client)
 
     assert expanded == []
@@ -470,7 +595,7 @@ def test_expand_neighbors_reads_neighbor_min_score_from_schema(monkeypatch):
     ])
     hits = [hit({"related": ["n-low", "n-high"]})]
 
-    expanded = ask._expand_neighbors(hits, [1.0, 0.0], mode="all", client=client)
+    expanded = ask_expand.expand_neighbors(hits, [1.0, 0.0], mode="all", client=client)
 
     assert [c.id for c in expanded] == ["n-high"]
 
@@ -482,8 +607,14 @@ def test_expand_neighbors_reads_neighbor_min_score_from_schema(monkeypatch):
 def test_parse_args_defaults():
     assert ask._parse_args(["ask"]) == {
         "Q": None, "type": None, "project": None,
-        "since": None, "until": None, "no-expand": False,
+        "since": None, "until": None, "no-expand": False, "stream": False,
     }
+
+
+def test_parse_args_recognises_stream_flag():
+    """--stream 是个布尔开关（不带值），别被当成需要配对的 flag。"""
+    assert ask._parse_args(["ask", "Q=x", "--stream"])["stream"] is True
+    assert ask._parse_args(["ask", "Q=x"])["stream"] is False
 
 
 def test_parse_args_reads_q_and_pairs_each_flag_with_its_value():
@@ -580,9 +711,9 @@ def test_main_prints_expanded_citations_in_their_own_section(
         pipeline_fakes, schema, monkeypatch, capsys):
     """关联补充要单独一节并带标记 —— 不然读者分不清它是不是直接命中。"""
     monkeypatch.setattr(
-        ask, "_expand_neighbors",
+        ask, "expand_neighbors",
         lambda hits, vector, mode=None, **kwargs: [
-            ask._citation_from_record(
+            ask_expand._citation_from_record(
                 SimpleNamespace(
                     id="n1", vector=None,
                     payload={"date": "2026-09-20", "type": "progress",
@@ -596,3 +727,84 @@ def test_main_prints_expanded_citations_in_their_own_section(
     assert "引用：" in out
     assert "- [2026-09-18] error: Qdrant upsert 409 root cause" in out
     assert "- [2026-09-20] progress（关联补充）: 邻居条目" in out
+
+
+# --- CLI --stream ---
+
+
+def _stream_answer(chunks, citations=None, expanded=None):
+    """构造一个 StreamedAnswer；chunks 传可迭代对象即可。"""
+    return ask.StreamedAnswer(
+        question="问题", citations=citations or [], expanded=expanded or [],
+        chunks=iter(chunks))
+
+
+def test_main_stream_prints_incrementally_not_after_the_fact(
+        schema, monkeypatch, capsys):
+    """流式的全部意义是**边生成边打印**：第二块还没生出来时，第一块就得在屏幕上。
+
+    这条用"生成器恢复执行的那一刻去读已捕获的 stdout"来证明顺序，而不是
+    只断言最终输出拼接正确 —— 后者对"先攒完再一次性打印"同样成立，也就
+    等于没测出流式。真实调用里那意味着用户要盯着空屏等完全部生成。
+    """
+    printed_before_second_chunk = []
+
+    def chunks():
+        yield "第一块"
+        printed_before_second_chunk.append(capsys.readouterr().out)
+        yield "第二块"
+
+    monkeypatch.setattr(
+        ask, "query_stream",
+        lambda question, **kwargs: _stream_answer(chunks()))
+
+    code = ask.main(["ask", "Q=问题", "--stream"])
+
+    assert code == 0
+    assert "第一块" in printed_before_second_chunk[0]
+    assert "第二块" in capsys.readouterr().out  # 只可能出现在之后的输出里
+
+
+def test_main_stream_prints_citations_after_the_text(
+        schema, monkeypatch, capsys):
+    """流式也要有引用清单，且排在正文之后（引用是给读完之后对照用的）。"""
+    citation = ask.Citation(
+        id="id-1", date="2026-09-18", type="error",
+        text="Qdrant upsert 409 root cause", source="claude_code",
+        source_refs=["s1"], score=0.9)
+    monkeypatch.setattr(
+        ask, "query_stream",
+        lambda question, **kwargs: _stream_answer(["正文。"], [citation]))
+
+    ask.main(["ask", "Q=问题", "--stream"])
+
+    out = capsys.readouterr().out
+    assert out.index("正文。") < out.index("引用：")
+    assert "- [2026-09-18] error: Qdrant upsert 409 root cause" in out
+
+
+def test_main_stream_forwards_filters_to_query_stream(schema, monkeypatch):
+    """流式路径也要吃过滤参数 —— 丢了过滤等于回答里混进不符合条件的条目。"""
+    calls = []
+    monkeypatch.setattr(
+        ask, "query_stream",
+        lambda question, **kwargs: calls.append((question, kwargs))
+        or _stream_answer(["ok"]))
+
+    ask.main(["ask", "Q=问题", "--type", "error", "--since", "7d", "--stream"])
+
+    assert calls == [("问题", {
+        "type": "error", "project": None, "since": "7d",
+        "until": None, "expand": None,
+    })]
+
+
+def test_main_without_stream_does_not_touch_the_streaming_path(
+        pipeline_fakes, schema, monkeypatch, capsys):
+    """不给 --stream 时必须走老的一次性路径，流式代码不能悄悄接管默认行为。"""
+    def boom(*a, **k):
+        raise AssertionError("非流式调用不该走 query_stream")
+
+    monkeypatch.setattr(ask, "query_stream", boom)
+
+    assert ask.main(["ask", "Q=问题"]) == 0

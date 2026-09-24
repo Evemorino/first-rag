@@ -31,10 +31,13 @@
     "max_entries_per_day": 30,
     "struggle_rounds": 3,
     "max_raw_chars": 2000000,
-    "batch_max_chars": 120000
+    "batch_max_chars": 120000,
+    "parallel_workers": 8
   },
   "retrieval": {
     "top_k": 8,
+    "answer_max_tokens": 600,
+    "disable_thinking": true,
     "expand": {
       "mode": "all",
       "neighbor_limit_per_hit": 2,
