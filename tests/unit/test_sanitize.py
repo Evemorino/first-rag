@@ -141,7 +141,7 @@ def test_ordinary_text_is_untouched():
 
 
 def test_hyphenated_words_that_contain_the_prefixes_survive():
-    """`task-lifecycle` 里含 "sk-lifecycle"、`landmark-2` 里含 "ark-2"。
+    """`task-lifecycle` 与 `landmark-2` 的中段正好撞上两条令牌规则的前缀。
 
     真实数据里就有这种误报：2026-09-18 那次同步的快照是另一个项目的仓库，
     `git --stat` 把 `long-task-coordinator.ts`、`task-lifecycle.ts` 这类文件名

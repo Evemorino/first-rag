@@ -128,7 +128,7 @@ baseline:
 baseline-update:
 	$(PY) scripts/baseline_check.py --update
 
-# 门禁自检：给 14 个钩子各植入一个已知违规，看它到底红不红；再跑一组
+# 门禁自检：给 15 个钩子各植入一个已知违规，看它到底红不红；再跑一组
 # "干净仓库"对照，确认该放行的时候它也放行。约 10 秒。
 # 什么时候跑：改了 .pre-commit-config.yaml 或任何一个 scripts/*_check|guard|lint 之后。
 # 想确认这把自检本身还灵：把 scripts/lint_layers.py 的 main 开头加一行 `return 0`，
@@ -139,7 +139,7 @@ gate-selftest:
 # --- 提交门禁 ---
 # 装好之后，每次 git commit 会自动跑：文本/密钥检查 → pytest → CRAP。
 # 想临时跳过某次提交：git commit --no-verify（别养成习惯）。
-# 装两步：commit 前那 14 个钩子，外加一个 post-commit 提醒
+# 装两步：commit 前那 15 个钩子，外加一个 post-commit 提醒
 # （提醒"这次改动落在变异覆盖范围内"，它拦不住也拦不了，只能说一声）
 hooks:
 	uv run pre-commit install

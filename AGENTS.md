@@ -44,7 +44,7 @@ make boundary      # 写入边界：产品源目录只读 + src/ 写入点必须
 make mutation-selfcheck  # 已知必死改动的自检：抓不住就别信变异分数
 make mutation      # 变异测试（mutmut），默认只打核心链路（内部先跑自检，末尾核对文档基线）
 make baseline      # 只核对不重跑：README 里的分数还准不准 + 哪些文件比上次跑批新
-make hooks         # 装 pre-commit：每次 commit 自动跑 14 个钩子（CI 上还有一层）
+make hooks         # 装 pre-commit：每次 commit 自动跑 15 个钩子（CI 上还有一层）
 make gate-selftest # 门禁自检：给每个钩子植入违规，看它到底红不红（约 10 秒）
 ```
 
@@ -60,6 +60,7 @@ src/
   collect.py       # 汇聚插件 + git + 快记 → data/raw/YYYY-MM-DD.json
   distill.py       # 蒸馏编排：脱敏→LLM→校验→熔断
   sanitize.py      # 脱敏：进 LLM 前抹掉密钥/令牌（宪法 V 的边界）
+  secret_patterns.py# 什么算密钥的唯一清单：脱敏与提交门禁共用（抄两份会漂）
   distill_candidates.py  # 候选条目校验：类型/标签/来源引用 → 可用与待重试两堆
   distill_messages.py    # 追问 LLM 的话术（非法 JSON、未知类型各一次）
   distill_batches.py     # 按 distill.batch_max_chars 把一天切成多批（防单次输出被截断）
@@ -75,9 +76,10 @@ scripts/orphan_check.py  # 孤儿模块：找出零覆盖的 src/ 模块（CRAP 
 scripts/lint_layers.py   # 位置与分层门禁：src/ 新目录必须登记 + AST 查 import 方向
 scripts/size_guard.py    # 规模门禁：src/ 文件 SLOC 与函数行数上限
 scripts/write_boundary_check.py  # 写入边界门禁：产品目录只读 + src/ 写入点必须登记
+scripts/secret_scan.py      # 令牌扫描门禁：提交物里出现 API key/token 就红
 scripts/mutation_selfcheck.py  # 变异自检 canary（改坏源码看测试红不红）
 scripts/baseline_check.py      # 文档基线核对：mutants/ 真实结果 vs README 写死的数字
-scripts/gate_selftest.py       # 门禁自检：给 14 个钩子各植入一个违规，断言它真会红
+scripts/gate_selftest.py       # 门禁自检：给 15 个钩子各植入一个违规，断言它真会红
 tests/mutmut_compat.py  # mutmut 3.x 对 `src.` 包名的兼容补丁（见文件头）
 config/            # schema.json（类型/rubric/检索/trae 映射/保留期）、repos.txt（git 采集仓库清单，
                    # 一行一个绝对路径；`~` 不展开）；scope.json 只在人跑过 `make scope` 后才存在

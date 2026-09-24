@@ -44,8 +44,10 @@ make serve                             # 按需 API：/health /log /sync /ask
 make hooks        # = uv run pre-commit install
 ```
 
-14 个钩子，按"从便宜到贵"排：大文件/冲突/JSON/YAML/AST → 行尾空白 →
-**密钥扫描** → 位置与分层 → 规模 → **写入边界** → pytest → CRAP → 孤儿模块。
+15 个钩子，按"从便宜到贵"排：大文件/冲突/JSON/YAML/AST → 行尾空白 →
+**私钥检测**（`detect-private-key`，只认 PEM）→ **令牌扫描**（API key/token 形态，
+`src/secret_patterns.py` 那一套）→ 位置与分层 → 规模 → **写入边界** → pytest →
+CRAP → 孤儿模块。
 
 - **pytest 挂了会直接停下**（`fail_fast`）—— 否则 CRAP 会拿一份残缺的
   coverage.xml 判门禁，凭空报出一堆不存在的 crappy 函数。CRAP 与孤儿检查
@@ -69,7 +71,7 @@ make hooks        # = uv run pre-commit install
   `make boundary-list` 看全表。
 - **同一套门禁在 CI 上再跑一遍**（`.github/workflows/ci.yml`）。pre-commit 挡不住
   `--no-verify`，也挡不住"换了台机器/另一个 agent 会话没装 hooks"，而本项目经常并行
-  开好几个会话。CI 不新增任何判断标准，只跑那 14 个钩子 + `make gate-selftest` ——
+  开好几个会话。CI 不新增任何判断标准，只跑那 15 个钩子 + `make gate-selftest` ——
   后者才是这个文件存在的理由：门禁自己坏了的时候（脚本改错、`files:` 过滤器写宽），
   本地和 CI 都会一路绿着放行，只有"植入违规看它红不红"能发现。
 - **钩子自己也会坏，而且坏得很安静**。改了 `.pre-commit-config.yaml` 或
@@ -420,6 +422,11 @@ kimi 素材加进来，把那天撑大了"——**这条直觉是错的**，对�
   于是"脱敏已验证"这个结论从来没覆盖到我们实际那把钥匙。现在两类都补上了，
   `tests/unit/test_sanitize.py` 也钉住了反向的误伤（`task-lifecycle.ts`、
   `landmark-2` 这类含 `sk-`/`ark-` 中段的正常文本必须原样通过）。
+  同一份清单现在还是第 15 道提交门禁（`scripts/secret_scan.py`）的规则来源 ——
+  运行时脱敏与"别提交进库"是两个判断，但"什么算密钥"只能有一份，否则就会像这次
+  一样两边各自漂。它扫 git 跟踪的提交物，且赋值式规则只作用于非源码文件
+  （`api_key=config.env("…")` 是代码，不是密钥）：第一次全库自扫出 29 处命中，
+  **全是误报**，收紧到 0 之后才敢接进钩子 —— 一道永远红的门禁等于没有门禁。
 - **蒸馏数据流向**：会话素材会发送到火山方舟（Ark）做蒸馏与嵌入。你本就通过
   方舟代理使用这些编码工具，数据流向与现有使用方式一致，无新增暴露面（PRD §9）。
 - **备份/迁移**：备份 = 复制 `data/`；换机器 = 复制 `data/` + `config/` + `notes/`。

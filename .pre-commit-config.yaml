@@ -25,6 +25,15 @@ repos:
   - repo: local
     hooks:
       # --- 毫秒级：只管 src/ 的结构约束 ---
+      # 补 detect-private-key 看不见的那一半：它只认 PEM 私钥，而 2026-09-24
+      # 真有一把 46 字符的方舟密钥躺在被跟踪的 .env.example 里，14 个钩子全绿。
+      # 规则清单与运行时脱敏共用 src/secret_patterns.py —— 抄两份会漂，已经漂过一次。
+      - id: secret-scan
+        name: 令牌扫描（API key/token 形态，detect-private-key 只管 PEM 私钥）
+        entry: uv run --no-sync python scripts/secret_scan.py
+        language: system
+        types: [text]
+
       # --no-sync：环境本来就是常驻的，没必要每次提交都重新构建一遍包
       - id: lint-layers
         name: 位置与分层（src/ 目录登记 + import 方向）

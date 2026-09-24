@@ -72,6 +72,10 @@ FAKE_PEM = (
     "-----END RSA PRIVATE " + "KEY-----\n"
 )
 
+# 同样拼接构造，而且必须拼：这个文件自己是本仓库扫描的对象，写全了等于自杀。
+# 触发的是赋值式规则（配置/文档形态），不是 PEM。
+LEAKY_CONFIG = "ARK_API_KEY: " + ("ar" + "k-") + "7" * 40 + "\n"
+
 # 复杂度 12 左右 → CRAP = 12²×(1-0)³+12 = 156，远超阈值 30。
 # 关键是"复杂"和"零覆盖"必须同时成立：复杂度 1 的函数哪怕零覆盖，
 # CRAP 也只有 2，这个夹具就白造了（那正是 CRAP 的盲区）。
@@ -146,6 +150,7 @@ CLEAN_HOOKS = [
     "end-of-file-fixer",
     "trailing-whitespace",
     "detect-private-key",
+    "secret-scan",
     "lint-layers",
     "size-guard",
     "write-boundary",
@@ -153,6 +158,11 @@ CLEAN_HOOKS = [
     "crap",
     "orphans",
 ]
+
+# 钩子脚本对本仓库 src/ 模块的依赖，建临时仓库时要一起带过去。
+# 只给需要的钩子复制，别一把全拷：临时仓库里多出一个零覆盖的 src/ 模块，
+# orphans 那道对照实验就会红得莫名其妙。
+SCRIPT_DEPS = {"secret-scan": ("src/secret_patterns.py",)}
 
 
 @dataclass(frozen=True)
@@ -165,6 +175,11 @@ class Case:
     expect: str = "red"          # "red" 期望非 0；"green" 期望 0
     why: str = ""                # 为什么这样能触发它 —— 半年后看的人会问
     in_merge: bool = False       # 造一个"正在 merge"的 git 状态（见下）
+    # 钩子的脚本 import 了本仓库的哪些模块，就得一起带进临时仓库。
+    # 不声明的话临时仓库里它会直接 ImportError，而"跑不起来"在非 0 退出码上
+    # 长得和"拦住了"一模一样 —— 干净对照组会因此假绿失败（secret-scan 第一版
+    # 就是这么暴露出依赖 src/secret_patterns.py 的）。
+    repo_files: tuple[str, ...] = ()
 
     @property
     def slug(self) -> str:
@@ -200,6 +215,13 @@ CASES: list[Case] = [
     Case("detect-private-key", "私钥进库",
          {"key.pem": FAKE_PEM}, "red",
          "宪法 V 唯一能自动守住的一环：密钥 MUST NOT 出现在任何提交物里"),
+    Case("secret-scan", "API 令牌写进了配置模板",
+         {"config/leaky.yaml": LEAKY_CONFIG}, "red",
+         repo_files=SCRIPT_DEPS["secret-scan"],
+         why="上一个钩子守不住的那一半：detect-private-key 只认 PEM 私钥，看不见 "
+             "API 令牌。2026-09-24 真发生过一把 46 字符的方舟密钥躺在被跟踪的 "
+             ".env.example 里、14 个钩子全绿。夹具必须拼接构造 —— 写全了这段，"
+             "这个文件自己就会被这道钩子扫出来"),
     Case("lint-layers", "插件 import 编排层",
          {"src/plugins/demo.py": "from src import distill\n"}, "red",
          "插件只允许 src.plugins 与 src.config，反向依赖会让改一处全库回归"),
@@ -260,7 +282,8 @@ CASES: list[Case] = [
          "对照组：什么都不违规时，这个钩子必须放行",
          # 同样的理由：不在 merge 中的时候 check-merge-conflict 直接返回 0，
          # 那样的"绿"是假的，证明不了任何事。
-         in_merge=(hook == "check-merge-conflict"))
+         in_merge=(hook == "check-merge-conflict"),
+         repo_files=SCRIPT_DEPS.get(hook, ()))
     for hook in CLEAN_HOOKS
 ]
 
@@ -283,7 +306,8 @@ def _git(dest: Path, *args: str) -> None:
     )
 
 
-def build_repo(dest: Path, files: dict[str, str], in_merge: bool = False) -> None:
+def build_repo(dest: Path, files: dict[str, str], in_merge: bool = False,
+               repo_files: tuple[str, ...] = ()) -> None:
     """建一个能跑 pre-commit 的最小 git 仓库，并把夹具写进去。
 
     只 `git add` 不 commit，是故意的：真实提交时钩子面对的就是暂存区，
@@ -305,6 +329,12 @@ def build_repo(dest: Path, files: dict[str, str], in_merge: bool = False) -> Non
     # 按文件读它，炸在 IsADirectoryError 上，报出一堆和用例无关的错误。
     shutil.copytree(SCRIPTS, dest / "scripts",
                     ignore=shutil.ignore_patterns("__pycache__"))
+    # 钩子的脚本 import 了本仓库的模块时，得按声明一起带过来（见 SCRIPT_DEPS）：
+    # 少了它，脚本以 ImportError 非 0 退出，而非 0 在非 0 上长得和"拦住了"一样。
+    for rel in repo_files:
+        target = dest / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(REPO_ROOT / rel, target)
     (dest / "pytest.ini").write_text(PYTEST_INI, encoding="utf-8")
 
     for rel, text in files.items():
@@ -350,7 +380,7 @@ _CLEAN_ENV = {
 def run_case(case: Case, keep: bool = False) -> Result:
     dest = TMP_ROOT / case.slug
     try:
-        build_repo(dest, case.files, case.in_merge)
+        build_repo(dest, case.files, case.in_merge, case.repo_files)
         state, out = run_hook(dest, case.hook)
         ok = state == case.expect
         return Result(case, state, ok, "" if ok else out.strip())
