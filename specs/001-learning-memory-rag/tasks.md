@@ -56,7 +56,8 @@
 - [ ] T027 ★[US2] `src/similarity.py` 关联边构建：**用户手写**——top-5 中 >0.75 建边、单条上限 5、对方已满跳过回填、确定性（FR-017；AC-005 前置）
 - [ ] T028 [US2] `ingest.py` 接入关联边构建 + 重跑不产重复边（AC-003 关联面）——*⏸ 阻塞于 T027（用户手写），边构建就位后接线*
 - [x] T030 [US2] integration：过滤生效（AC-004）、扩展开关与标记（AC-005）；ask 单次耗时 ≤10 秒实测记录（plan Technical Context，G2 补）——*test_ask_filters.py（内嵌 Qdrant + fake embed/chat）：type+date 过滤仅命中窗口内 error、DatetimeRange 对 "YYYY-MM-DD" payload 实证有效、默认扩展带（关联补充）标记、--no-expand 后消失；**ask ≤10s 耗时实测待 .env + make up 后记录***
-- [ ] T031 [US2] 性能检查：典型日 sync ≤5 分钟实测记录（NFR-006 / SC-011）——*⏸ 待 .env + make up 后实测*
+- [x] T031 [US2] 性能检查：典型日 sync ≤5 分钟实测记录（NFR-006 / SC-011）——*两次真跑（Qdrant 本地容器、Ark plan 通道）：**2026-09-18 = 188.06s**（8 条素材 / 234,021 字符 / 2 次 chat 往返 / 27 条入库）；**2026-09-23 = 291s**（26 条素材 / 1,332,282 字符 / 12 条入库）。均 ≤300s，但 09-23 那天已用到预算的 ~97%，素材再翻一倍就不是"慢一点"而是违约*
+  - 实测过程中炸出来一个真缺陷并已修：单次 chat 的**输出**被服务端 completion 上限掐断（实测 `finish_reason='length'`、6894 字符 / 6865 tokens 处断），`DistillError: LLM returned invalid JSON`，而 `_parse_or_retry` 的重试是原样再发一遍 → 同一处再断一次，整天 0 条入库。修法是按 `distill.batch_max_chars`（新配置项，默认 120000）把一天切批蒸馏，见 `src/distill_batches.py`；决定成败的是输出长度不是输入长度（输入大 5.7 倍的 09-23 反而一次就过）。
 - [ ] T020 [US1] **Dogfood ①**（M5，按 plan 顺序置于检索/关联边之后）：用本项目开发会话跑通全链路，记录首印象（LG-001）——*⏸ 待 .env 后真跑（建议 T027 关联边就位后一并做，LG-001 首印象更完整）*
 
 ## Phase 5: US3 手动快记（M8 入口，随 T019 可先行）

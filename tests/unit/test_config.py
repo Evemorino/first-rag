@@ -154,7 +154,7 @@ def test_distill_must_be_an_object(tmp_path, broken):
 
 
 @pytest.mark.parametrize("key", ["include_signals", "examples", "struggle_rounds",
-                                 "max_raw_chars"])
+                                 "max_raw_chars", "batch_max_chars"])
 def test_distill_missing_any_key_reports_which(tmp_path, key):
     def drop_key(schema):
         del schema["distill"][key]
@@ -164,6 +164,21 @@ def test_distill_missing_any_key_reports_which(tmp_path, key):
         config.load_schema(path)
 
     assert str(excinfo.value) == f"schema.distill is missing '{key}'"
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_batch_max_chars_below_one_rejected(tmp_path, value):
+    """分批预算必须为正：0 或负数会让每一天切成 0 批，等于静默不蒸馏。"""
+    def set_budget(schema):
+        schema["distill"]["batch_max_chars"] = value
+
+    path = _make_schema(tmp_path, set_budget)
+    with pytest.raises(config.ConfigError) as excinfo:
+        config.load_schema(path)
+
+    assert str(excinfo.value) == (
+        "schema.distill.batch_max_chars must be >= 1"
+    )
 
 
 @pytest.mark.parametrize("value", [0, -0.1, 1.5])

@@ -62,6 +62,7 @@ src/
   sanitize.py      # 脱敏：进 LLM 前抹掉密钥/令牌（宪法 V 的边界）
   distill_candidates.py  # 候选条目校验：类型/标签/来源引用 → 可用与待重试两堆
   distill_messages.py    # 追问 LLM 的话术（非法 JSON、未知类型各一次）
+  distill_batches.py     # 按 distill.batch_max_chars 把一天切成多批（防单次输出被截断）
   ingest.py        # 嵌入→新颖度去重→Qdrant upsert（幂等）
   ask.py           # 过滤检索 + 引用式回答 + 关联扩展
   sync.py          # 串联主链路 + .sync.lock + retention 清理

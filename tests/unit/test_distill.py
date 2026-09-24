@@ -28,6 +28,8 @@ SCHEMA = {
         "max_entries_per_day": 3,
         "struggle_rounds": 3,
         "max_raw_chars": 200000,
+        # 默认给到很大，好让既有测试仍然是"一次往返"；专测分批的用例自己改小。
+        "batch_max_chars": 100000,
     },
     "retrieval": {
         "top_k": 8,
@@ -504,3 +506,61 @@ def test_direct_path_created_at_is_shanghai_aware(isolated_config):
     ]))
 
     assert entries[0].created_at.utcoffset() == timedelta(hours=8)
+
+
+def test_llm_runs_once_per_batch_and_merges_entries(isolated_config, monkeypatch):
+    """一批一次往返，条目全部合并 —— 修的是"一天一次请求被输出上限掐断"。
+
+    实测天花板：单次 chat 在 ~6.9k 字符处 finish_reason='length'，JSON 断在
+    半截字符串里，distill 报 "LLM returned invalid JSON" 且那次重试也断在
+    8370/8651 字符（sync D=2026-09-18）。所以把预算调小、素材分三批跑。
+    """
+    monkeypatch.setitem(SCHEMA["distill"], "batch_max_chars", 60)
+    prompts = []
+
+    def fake_chat(messages, json_mode=False):
+        body = messages[1]["content"]
+        prompts.append(body)
+        refs = [r for r in ("session-a", "session-b", "session-c")
+                if f'"{r}"' in body]
+        return json.dumps({"entries": [candidate(f"条目 {r}", ref=r) for r in refs]})
+
+    monkeypatch.setattr(distill, "chat", fake_chat)
+    day_raw = make_day_raw([
+        make_material("x" * 50, ref="session-a"),
+        make_material("y" * 50, ref="session-b"),
+        make_material("z" * 50, ref="session-c"),
+    ])
+
+    entries = distill.distill(day_raw)
+
+    assert len(prompts) == 3, "三批素材应该发三次请求"
+    assert sorted(e.text for e in entries) == ["条目 session-a", "条目 session-b",
+                                               "条目 session-c"]
+
+
+def test_batch_without_llm_material_is_not_sent(isolated_config, monkeypatch):
+    """只含直并入素材（快记/trae）的那一批不必浪费一次 LLM 往返。
+
+    它们已经由 _direct_entries 原样入库；再送去蒸馏既费 token，又可能把同一段
+    话蒸成第二条重复条目。
+    """
+    monkeypatch.setitem(SCHEMA["distill"], "batch_max_chars", 60)
+    prompts = []
+
+    def fake_chat(messages, json_mode=False):
+        prompts.append(messages[1]["content"])
+        return json.dumps({"entries": [candidate("来自 claude 的条目", ref="session-a")]})
+
+    monkeypatch.setattr(distill, "chat", fake_chat)
+    day_raw = make_day_raw([
+        make_material("x" * 50, ref="session-a"),
+        make_material("q" * 50, ref="inbox.md", source="manual",
+                      kind="note", meta={"note_type": "idea"}),
+    ])
+
+    entries = distill.distill(day_raw)
+
+    assert len(prompts) == 1
+    assert "session-a" in prompts[0] and "inbox.md" not in prompts[0]
+    assert len(entries) == 2  # claude 蒸出来的一条 + 快记直并入的一条

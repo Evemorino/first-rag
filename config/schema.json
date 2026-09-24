@@ -30,7 +30,8 @@
     "novelty_threshold": 0.82,
     "max_entries_per_day": 30,
     "struggle_rounds": 3,
-    "max_raw_chars": 2000000
+    "max_raw_chars": 2000000,
+    "batch_max_chars": 120000
   },
   "retrieval": {
     "top_k": 8,

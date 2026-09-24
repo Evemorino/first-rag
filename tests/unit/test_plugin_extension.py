@@ -91,6 +91,7 @@ SCHEMA_WITH_NEW_TYPE = {
         "examples": {"keep": [], "drop": []},
         "novelty_threshold": 0.82, "max_entries_per_day": 30,
         "struggle_rounds": 3, "max_raw_chars": 100000,
+        "batch_max_chars": 100000,
     },
     "retrieval": {"top_k": 8, "expand": {
         "mode": "all", "neighbor_limit_per_hit": 2,

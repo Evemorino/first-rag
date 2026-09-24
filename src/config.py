@@ -57,7 +57,7 @@ def env(name: str) -> str:
 
 _DISTILL_KEYS = ("include_signals", "exclude_signals", "examples",
                  "novelty_threshold", "max_entries_per_day",
-                 "struggle_rounds", "max_raw_chars")
+                 "struggle_rounds", "max_raw_chars", "batch_max_chars")
 _EXPAND_KEYS = ("mode", "neighbor_limit_per_hit", "context_cap")
 
 
@@ -113,6 +113,8 @@ def _validate_distill(distill: object) -> None:
         raise ConfigError("schema.distill.novelty_threshold must be in (0, 1]")
     if distill["max_entries_per_day"] < 1:
         raise ConfigError("schema.distill.max_entries_per_day must be >= 1")
+    if distill["batch_max_chars"] < 1:
+        raise ConfigError("schema.distill.batch_max_chars must be >= 1")
 
 
 def _validate_retrieval(retrieval: object) -> None:

@@ -18,12 +18,14 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from dataclasses import replace
 from datetime import date, datetime
 from typing import Any
 
 from src import config, distill_prompt, sanitize
 from src.ark_client import chat
 from src.collect import DayRaw, save_snapshot
+from src.distill_batches import split_for_batches
 from src.distill_candidates import project_of, split_candidates
 from src.distill_messages import (
     invalid_json_messages,
@@ -260,6 +262,34 @@ def _llm_entries(
     return valid
 
 
+def _batched_llm_entries(
+    day_raw: DayRaw,
+    schema: dict,
+    allowed_types: list[str],
+    version: str,
+    created_at: datetime,
+) -> list[Entry]:
+    """按 batch_max_chars 分批蒸馏。
+
+    一次往返要吐的 JSON 太长会被服务端的 completion 上限掐断（实测断在 ~6.9k
+    字符，finish_reason='length'），而 _parse_or_retry 的重试是原样再发一遍，
+    于是同一处再断一次，整天以 DistillError 收场。切小每批的输出就断不了。
+
+    每批只看得见本批素材，source_refs 也因此只能引用本批；没有 LLM 素材的批次
+    直接跳过 —— 那些内容已经走直并入入库了，再问一次只是白烧 token。
+    """
+    budget = schema["distill"]["batch_max_chars"]
+    entries: list[Entry] = []
+    for group in split_for_batches(day_raw.materials, budget):
+        batch = replace(day_raw, materials=group)
+        if not _llm_materials(batch):
+            continue
+        messages = distill_prompt.build_messages(batch, schema)
+        entries.extend(
+            _llm_entries(messages, allowed_types, batch, version, created_at))
+    return entries
+
+
 def distill(day_raw: DayRaw) -> list[Entry]:
     """Run the T016 pipeline and return validated entries for ingest."""
     sanitize.sanitize_materials(day_raw)
@@ -291,8 +321,8 @@ def distill(day_raw: DayRaw) -> list[Entry]:
 
         model = config.env("CHAT_MODEL")
         version = _distill_version(model, rubric_hash)
-        messages = distill_prompt.build_messages(day_raw, schema)
-        valid = _llm_entries(messages, allowed_types, day_raw, version, created_at)
+        valid = _batched_llm_entries(
+            day_raw, schema, allowed_types, version, created_at)
 
         entries = _cap_entries(
             _dedupe_entries([*direct_entries, *valid]),

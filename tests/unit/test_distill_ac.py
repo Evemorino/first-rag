@@ -32,6 +32,8 @@ SCHEMA = {
         "max_entries_per_day": 3,
         "struggle_rounds": 3,
         "max_raw_chars": 200000,
+        # 分批预算给到很大：这些 AC 用例要的是"一次往返"的语义，分批另有专测。
+        "batch_max_chars": 100000,
     },
     "retrieval": {
         "top_k": 8,
