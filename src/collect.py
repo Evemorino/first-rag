@@ -138,6 +138,10 @@ def _note_materials(day: date) -> list[RawMaterial]:
             try:
                 ts = datetime.fromisoformat(m.group(1).strip())
             except ValueError:
+                # 长得像快记、时间戳却坏了 —— 会丢的是一句人写下的东西，
+                # 不能没声息。普通散文行走的是上面 `if not m` 那条，不报。
+                logger.warning("collect: dropping inbox line with bad "
+                               "timestamp %r: %s", m.group(1).strip(), line)
                 continue
             if ts.date() == day:
                 materials.append(RawMaterial(

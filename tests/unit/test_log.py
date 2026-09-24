@@ -1,5 +1,6 @@
 """T032/T033 unit tests: 手动快记（log → collect → 轻路径直并入）。"""
 
+import logging
 from datetime import date, datetime
 
 import pytest
@@ -41,6 +42,27 @@ def test_log_line_is_collectible(notes_dir):
     by_text = {m.text: m for m in materials}
     assert by_text["学习：快记走轻路径"].meta["note_type"] == "idea"
     assert by_text["没有标注类型的想法"].meta["note_type"] == "reflection"
+
+
+def test_note_line_with_broken_timestamp_is_reported(notes_dir, caplog):
+    """行长得像快记、时间戳却解析不了 —— 那是一句人写下的东西，不能没声息地丢。
+
+    只对这种"像快记但坏了"的行报警；inbox.md 里的普通散文行照样静默跳过，
+    否则每次 collect 都会刷一屏。
+    """
+    (notes_dir / "inbox.md").write_text(
+        "- [2026-09-20T22:31:00+08:00] 正常的一条\n"
+        "- [不是时间戳 #idea] 这行会被丢掉\n"
+        "# 一个手动加的标题\n",
+        encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="src.collect"):
+        materials = collect._note_materials(date(2026, 9, 20))
+
+    assert [m.text for m in materials] == ["正常的一条"]
+    assert any("不是时间戳" in r.getMessage() for r in caplog.records)
+    # 散文行不该产生噪音
+    assert not any("手动加的标题" in r.getMessage() for r in caplog.records)
 
 
 def test_note_flows_to_direct_path_without_llm(notes_dir, monkeypatch, tmp_path):

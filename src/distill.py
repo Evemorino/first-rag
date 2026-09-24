@@ -90,6 +90,10 @@ def _direct_entries(
             continue
         text = material.text.strip()
         if not text:
+            # 丢的是"一条采集回来的东西"，不能没声息。WARNING 不是 debug：
+            # CLI 的 basicConfig 设在 INFO，debug 级在这条链路上看不见。
+            logger.warning("distill: dropping blank %s material from %s (%s)",
+                           material.kind, material.source, material.ref)
             continue
         type_name = _direct_type(material, allowed)
         tags = list(dict.fromkeys([material.source, type_name]))

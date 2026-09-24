@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import re
 from datetime import date, datetime, timedelta
 
@@ -474,6 +475,26 @@ def test_direct_entries_keep_going_after_unusable_materials():
 
     assert [e.text for e in entries] == ["真正的一条快记"]
     assert entries[0].type == "idea"
+
+
+def test_direct_entries_reports_blank_material(caplog):
+    """文本为空被丢掉的是"一条采集回来的东西"，不能没声息。
+
+    级别钉在 WARNING：CLI 把 basicConfig 设在 INFO，debug 写在这儿看不见。
+    实测 data/raw 96 条素材里 0 条为空，所以不会刷屏。
+    """
+    day_raw = make_day_raw([
+        make_material("   ", kind="note", source="manual", ref="inbox.md"),
+    ])
+
+    with caplog.at_level(logging.WARNING, logger="src.distill"):
+        entries = distill._direct_entries(
+            day_raw, SCHEMA, "direct+rubric@x",
+            datetime(2026, 9, 20, 12, 0, tzinfo=config.TZ))
+
+    assert entries == []
+    assert any(r.levelno >= logging.WARNING and "inbox.md" in r.getMessage()
+               for r in caplog.records), "空素材被丢掉却没有留下任何记录"
 
 
 def test_dedupe_entries_keeps_entries_after_a_duplicate():
