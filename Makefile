@@ -133,6 +133,12 @@ baseline:
 baseline-update:
 	$(PY) scripts/baseline_check.py --update
 
+# 换一把尺子量同一批存活变异体：mutmut 判"存活"只说明它的 trampoline 机制下
+# 没测试响；这里把改动**真的**打进 src/ 跑一遍测试（跑完按字节还原）。
+# 默认 --summary 只分族不改源码；--run 才动手，且要求 src/ 干净。
+recheck:
+	$(PY) scripts/mutant_recheck.py --summary
+
 # 门禁自检：给 15 个钩子各植入一个已知违规，看它到底红不红；再跑一组
 # "干净仓库"对照，确认该放行的时候它也放行。约 10 秒。
 # 什么时候跑：改了 .pre-commit-config.yaml 或任何一个 scripts/*_check|guard|lint 之后。
