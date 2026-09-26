@@ -19,6 +19,7 @@ uv run python -m src.ask Q="…" --stream                  # = make ask --stream
 uv run python -m src.scope                   # = make scope
 uv run python -m src.redistill D=2026-09-18 [--apply]    # = make redistill
 uv run python scripts/embed_test.py          # = make embed-test
+uv run python scripts/rerun_overlap_report.py [--day 2026-09-24]  # = make rerun-overlap（只读）
 uv run uvicorn src.api.app:app --port 8300   # = make serve
 ```
 
@@ -49,6 +50,7 @@ make baseline      # 只核对不重跑：README 里的分数还准不准 + 哪�
 make recheck       # 分族统计存活变异体（mutmut 之外的另一个 oracle；--run 才改源码）
 make hooks         # 装 pre-commit：每次 commit 自动跑 15 个钩子（CI 上还有一层）
 make gate-selftest # 门禁自检：给每个钩子植入违规，看它到底红不红（约 10 秒）
+make rerun-overlap [D=2026-09-24] [ARGS="--threshold 0.80"]  # 只读：同日重跑重叠度（FR-007 待澄清项的实测）
 ```
 
 ## 目录速查
@@ -88,6 +90,7 @@ scripts/mutation_selfcheck.py  # 变异自检 canary（改坏源码看测试红�
 scripts/mutant_recheck.py      # 把存活变异体手工打进源码重跑测试：分族 + 逐条判决（mutmut 之外的另一个 oracle）
 scripts/baseline_check.py      # 文档基线核对：mutants/ 真实结果 vs README 写死的数字
 scripts/gate_selftest.py       # 门禁自检：给 15 个钩子各植入一个违规，断言它真会红
+scripts/rerun_overlap_report.py # 同日重跑重叠度（只读 Qdrant）：NN 分布 vs novelty_threshold
 tests/mutmut_compat.py  # mutmut 3.x 对 `src.` 包名的兼容补丁（见文件头）
 config/            # schema.json（类型/rubric/检索/trae 映射/保留期）、repos.txt（git 采集仓库清单，
                    # 一行一个绝对路径；`~` 不展开）；scope.json 只在人跑过 `make scope` 后才存在

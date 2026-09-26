@@ -38,5 +38,5 @@ def distill(day_raw):
             break
         entries = json.loads(call_llm(text))["entries"]
 
-    return entries  # 坏：没有类型校验后的丢弃策略，也没有每日条数熔断。
+    return entries  # 坏：没有类型校验后的丢弃策略，也没有每次运行条数熔断。
 '''

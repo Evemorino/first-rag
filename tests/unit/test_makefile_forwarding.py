@@ -30,6 +30,13 @@ FORWARDED = {
     "ask": ("Q", "ARGS"),
 }
 
+# 目标 → (配方里该出现的锚点, README 里写明可用的参数变量名)。
+# 脚本型目标的配方跑的是 `scripts/*.py`，锚点不是 `src.<target>`；判据与上面
+# 那张表完全一样 —— "README 写了可用，配方就得转发"，只是锚点换了个字符串。
+FORWARDED_SCRIPTS = {
+    "rerun-overlap": ("scripts/rerun_overlap_report.py", ("D", "ARGS")),
+}
+
 
 def _recipes(text: str) -> dict[str, str]:
     """把 Makefile 拆成 {目标名: 配方}，配方是紧跟目标行、以 Tab 开头的那些行。"""
@@ -67,6 +74,29 @@ def test_target_forwards_its_documented_flags(target, flags, recipes):
 
     # 锚一下"确实拿到了这个目标的配方"，否则解析跑偏时断言可能空转。
     assert f"src.{target}" in recipe, f"{target} 的配方解析错了：{recipe!r}"
+    for flag in flags:
+        assert f"$({flag})" in recipe, (
+            f"`make {target}` 没有转发 {flag}：参数会被静默丢掉，"
+            f"而 README 写着它可用。配方：{recipe.strip()!r}"
+        )
+
+
+@pytest.mark.parametrize(
+    "target,anchor,flags", [(t, *v) for t, v in sorted(FORWARDED_SCRIPTS.items())]
+)
+def test_script_target_forwards_its_documented_flags(
+    target, anchor, flags, recipes, readme_lines
+):
+    recipe = recipes[target]
+
+    # 锚点换成脚本路径：同样是为了防止"解析跑偏时断言空转"。
+    assert anchor in recipe, f"{target} 的配方解析错了：{recipe!r}"
+    # 表里写着"README 里可用"，README 里就真得有这个目标的示例 ——
+    # 否则这张表保护的是一份不存在的文档。
+    assert any(line.strip().startswith(f"make {target}") for _, line in readme_lines), (
+        f"README 的 ```sh 示例里没有 `make {target}`，"
+        f"这条转发断言保护的是不存在的文档"
+    )
     for flag in flags:
         assert f"$({flag})" in recipe, (
             f"`make {target}` 没有转发 {flag}：参数会被静默丢掉，"

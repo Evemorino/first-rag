@@ -8,7 +8,7 @@ PY = uv run --no-sync python
 .PHONY: cov crap crap-observe mutation mutation-selfcheck hooks
 .PHONY: baseline baseline-update orphans orphans-top
 .PHONY: layers layers-list size size-top boundary boundary-list gate-selftest
-.PHONY: schema-check migrate-trae
+.PHONY: schema-check migrate-trae rerun-overlap
 .PHONY: hooks hooks-run
 
 # Infrastructure: the only container is Qdrant (PRD §6, constitution VI)
@@ -127,6 +127,18 @@ schema-check:
 migrate-trae:
 	$(PY) scripts/migrate_trae_source.py $(ARGS)
 
+# --- 同日重跑重叠度（只读诊断，不是门禁） ---
+# PRD §9 的 FR-007 待澄清项（同日重跑累加）卡在一句推定上：多出来的条目与
+# 前面**近似重复**。这里把它量出来：同日各次运行的条目与「本簇之外最近邻」的
+# cosine 分布。阈值读 config/schema.json 的 novelty_threshold，与
+# similarity.filter_novel 同源，不抄第二份硬编码。
+#   总览：  make rerun-overlap
+#   明细：  make rerun-overlap D=2026-09-24       另出该日分次运行明细
+#   试算：  make rerun-overlap ARGS="--threshold 0.80"
+# 只做 Qdrant scroll/query，不写任何地方；连不上退出码 2（先 `make up`）。
+rerun-overlap:
+	$(PY) scripts/rerun_overlap_report.py $(if $(D),--day $(D)) $(ARGS)
+
 # 变异自检：先跑这个，再跑 mutation。
 # 它塞一个已知必死的改动进去，看测试抓不抓得住 —— 抓不住说明工具或断言有问题，
 # 这时候 mutation 给出的分数是假的（本项目踩过：28.8% 假 → 真实 75.8%）。
@@ -136,6 +148,8 @@ mutation-selfcheck:
 # 变异测试：把源码改坏，看测试能不能发现。默认只打核心链路（见 pyproject）。
 # 结果看 mutants/ 与 .mutmut-cache；改一行代码后重跑是增量的，很快。
 # 末尾自动核对 README 里的基线数字 —— 分数变了就报错，逼你顺手更新文档。
+# 还会核对「整个函数的变异体全被判 no tests」有没有登记（KNOWN_NO_TESTS）：
+# 映射过期会伪装成覆盖盲区（2026-09-26 那 13 条），不登记就红、数字也拒绝写回。
 mutation: mutation-selfcheck
 	$(PY) -m mutmut run
 	$(PY) -m mutmut results --all true
