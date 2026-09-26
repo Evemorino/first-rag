@@ -144,7 +144,7 @@ def test_trae_record_bypasses_llm(isolated_config, monkeypatch):
     day_raw = make_day_raw([
         make_material(
             "Trae already summarized this",
-            source="trae",
+            source="trae_work_cn",
             ref="session-memory.jsonl",
             kind="trae_record",
             meta={"note_type": "progress"},
@@ -156,7 +156,7 @@ def test_trae_record_bypasses_llm(isolated_config, monkeypatch):
     assert calls == []
     assert len(entries) == 1
     assert entries[0].type == "progress"
-    assert entries[0].source == "trae"
+    assert entries[0].source == "trae_work_cn"
 
 
 def test_sanitizes_materials_before_llm_and_snapshot(
@@ -563,7 +563,7 @@ def test_llm_runs_once_per_batch_and_merges_entries(isolated_config, monkeypatch
 
 
 def test_batch_without_llm_material_is_not_sent(isolated_config, monkeypatch):
-    """只含直并入素材（快记/trae）的那一批不必浪费一次 LLM 往返。
+    """只含直并入素材（快记/trae_work_cn）的那一批不必浪费一次 LLM 往返。
 
     它们已经由 _direct_entries 原样入库；再送去蒸馏既费 token，又可能把同一段
     话蒸成第二条重复条目。

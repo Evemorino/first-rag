@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 NOTE_LINE = re.compile(r"^\s*-\s*\[([^\]#]+?)\s*(?:#(\w+))?\]\s*(.*)$")
 
 
+class SnapshotShrinkError(RuntimeError):
+    """写快照会让已存在的同一天快照素材数变少。见 `save_snapshot`。"""
+
+
 @dataclass
 class DayRaw:
     """The on-disk snapshot structure (data-model.md)."""
@@ -47,12 +51,16 @@ def _iso(ts: datetime | None) -> str | None:
     return ts.isoformat() if ts else None
 
 
-def gather(day: date, scope: dict | None = None) -> DayRaw:
+def gather(day: date, scope: dict | None = None, *,
+           allow_shrink: bool = False) -> DayRaw:
     """Collect all sources for `day` and persist the snapshot (FR-006).
 
     `scope` (config/scope.json, FR-005) filters tools when present:
     {"tools": {"claude_code": true, ...}, "projects": {...}}.
     Missing sources are no-ops with a log line, never fatal (NFR-004).
+
+    `allow_shrink` 透传给 `save_snapshot`：**窄 scope 重跑是唯一会合法削减
+    素材数的路**（还有 `_cap`，但它是确定性的），所以明路的开关开在这里。
     """
     day_raw = DayRaw(day=day, collected_at=datetime.now(tz=config.TZ))
     schema = config.load_schema()
@@ -77,7 +85,7 @@ def gather(day: date, scope: dict | None = None) -> DayRaw:
     day_raw.materials.extend(_note_materials(day))
 
     _cap(day_raw, schema["distill"]["max_raw_chars"])
-    save_snapshot(day_raw)
+    save_snapshot(day_raw, allow_shrink=allow_shrink)
     return day_raw
 
 
@@ -192,12 +200,48 @@ def snapshot_path(day: date) -> Path:
     return config.RAW_DIR / f"{day.isoformat()}.json"
 
 
-def save_snapshot(day_raw: DayRaw) -> None:
-    """Persist the current DayRaw snapshot to data/raw/YYYY-MM-DD.json."""
+def save_snapshot(day_raw: DayRaw, *, allow_shrink: bool = False) -> None:
+    """Persist the current DayRaw snapshot to data/raw/YYYY-MM-DD.json.
+
+    素材数**变少是拒写的**，除非显式 `allow_shrink=True`。理由见
+    `_existing_material_count`：这个文件是 `make redistill` 的重放基线，
+    被一份更小的快照盖掉不会报错，只会让日后的 diff 静默失准。
+    """
     path = snapshot_path(day_raw.day)
+    previous = _existing_material_count(path)
+    if previous is not None and previous > len(day_raw.materials) and not allow_shrink:
+        raise SnapshotShrinkError(
+            f"refusing to shrink {path.name}: on disk {previous} materials, "
+            f"new snapshot has {len(day_raw.materials)}. "
+            "This file is the replay baseline for `make redistill`; overwriting it "
+            "with a smaller day silently makes later diffs wrong. "
+            "If the smaller snapshot is intended (e.g. a narrower scope), re-run "
+            "with allow_shrink=True (`make sync D=… ALLOW_SHRINK=1`); "
+            "if not, investigate first."
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(day_raw.to_dict(), ensure_ascii=False, indent=1),
         encoding="utf-8",
     )
     logger.info("collect: %d materials -> %s", len(day_raw.materials), path)
+
+
+def _existing_material_count(path: Path) -> int | None:
+    """已存在快照的素材数；没有文件返回 None。
+
+    **读不出来也算"不许覆盖"**：解析不了就无从判断会不会削减，而这里宁可停下。
+    一个坏掉的快照被静默盖掉，正是本函数要防的那类事故 —— 修文件是人的决定，
+    不是写入方的默认行为。
+    """
+    if not path.is_file():
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise SnapshotShrinkError(
+            f"{path.name} exists but cannot be read ({e}); refusing to overwrite "
+            "it. Fix or move the file, then re-run."
+        ) from e
+    materials = doc.get("materials") if isinstance(doc, dict) else None
+    return len(materials) if isinstance(materials, list) else 0

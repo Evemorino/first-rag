@@ -62,9 +62,10 @@ def test_matrix_estimates_latest_day_and_counts(cfg_dir, monkeypatch):
     assert row["estimated_items"] == 3  # 7 天窗口内估算条数
 
 
-def test_matrix_includes_repos_from_repos_txt(cfg_dir):
+def test_matrix_includes_repos_from_repos_txt(cfg_dir, monkeypatch):
     (cfg_dir / "repos.txt").write_text(
         "C:/Code/first-rag\nC:/Code/other\n", encoding="utf-8")
+    monkeypatch.setattr(scope, "iter_plugins", lambda: [])  # 只测 repos 解析，不碰真实源
 
     matrix = scope.build_matrix()
 
@@ -117,6 +118,7 @@ def test_disabled_project_skips_repo_commits(cfg_dir, monkeypatch):
         {"tools": {}, "projects": {"C:/Code/first-rag": False}}),
         encoding="utf-8")
     ran = []
+    monkeypatch.setattr(collect, "iter_plugins", lambda: [])  # 只测 repos 勾选，不碰真实源
     monkeypatch.setattr(collect, "_repo_commits",
                         lambda repo, day: ran.append(repo) or [])
 

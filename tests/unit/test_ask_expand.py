@@ -37,7 +37,7 @@ def hit(id: str, related: list[str], text: str = "entry") -> Hit:
 def point(id: str, text: str, vector=None):
     return SimpleNamespace(id=id,
                            payload={"text": text, "date": "2026-09-18",
-                                    "type": "reflection", "source": "trae",
+                                    "type": "reflection", "source": "trae_work_cn",
                                     "source_refs": [], "related": []},
                            vector=vector)
 

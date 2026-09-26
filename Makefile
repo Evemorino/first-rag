@@ -8,6 +8,7 @@ PY = uv run --no-sync python
 .PHONY: cov crap crap-observe mutation mutation-selfcheck hooks
 .PHONY: baseline baseline-update orphans orphans-top
 .PHONY: layers layers-list size size-top boundary boundary-list gate-selftest
+.PHONY: schema-check migrate-trae
 .PHONY: hooks hooks-run
 
 # Infrastructure: the only container is Qdrant (PRD §6, constitution VI)
@@ -23,11 +24,14 @@ embed-test:
 
 # --- Daily pipeline (needs up + embed-test done once) ---
 # Same-day idempotent: safe to re-run any number of times (FR-014).
+# 写入的 data/raw/<day>.json 是 redistill 的重放基线，默认**拒绝**用更小的快照
+# 覆盖它（窄 scope 重跑会触发）；确认要覆盖时加 ALLOW_SHRINK=1。
 sync:
-	$(PY) -m src.sync $(if $(D),D=$(D))
+	$(PY) -m src.sync $(if $(D),D=$(D)) $(if $(ALLOW_SHRINK),ALLOW_SHRINK=1)
 
 # --- Retrieval ---
-#   e.g. make ask Q="最近学了什么" --type error --since 7d --no-expand
+#   e.g. make ask Q="最近学了什么" ARGS="--type error --since 7d --no-expand"
+# 额外参数必须走 ARGS=：配方只转发 $(Q)/$(ARGS)，裸 --type 会被 make 当未知选项（退出码 2）
 ask:
 	$(PY) -m src.ask Q="$(Q)" $(ARGS)
 
@@ -104,6 +108,24 @@ boundary:
 
 boundary-list:
 	$(PY) scripts/write_boundary_check.py --list
+
+# --- 插件接入：动手写 parse() 之前，先照一眼真实文件长什么样 ---
+# 只读、不判对错 —— 是查看工具，不是门禁（契约第 2 步）。
+# JSONL/JSON 出点分路径 + 类型集合，SQLite 出表/行数/列。
+#   make schema-check F=~/.local/share/opencode/storage/session/xxx.jsonl
+#   make schema-check F=~/.hermes/state.db
+#   make schema-check F=big.jsonl ARGS="--limit 50 --max-depth 3"
+schema-check:
+	$(PY) scripts/schema_check.py "$(F)" $(ARGS)
+
+# 一次性存量迁移：trae → trae_work_cn（2026-09-25，9 条）。
+# 为什么要专门跑：条目 ID = uuid5(source|date|content_hash)，改 source 就是换 ID，
+# 不迁就启用新插件会让同一条素材以两个 ID 并存。**必须先迁再改名**。
+#   看清单：      make migrate-trae
+#   真迁：        make migrate-trae ARGS=--apply
+#   迁坏了还原：  make migrate-trae ARGS="--restore data/migrations/xxx.json --apply"
+migrate-trae:
+	$(PY) scripts/migrate_trae_source.py $(ARGS)
 
 # 变异自检：先跑这个，再跑 mutation。
 # 它塞一个已知必死的改动进去，看测试抓不抓得住 —— 抓不住说明工具或断言有问题，

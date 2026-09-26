@@ -100,7 +100,7 @@ def test_find_orphans_exempts_the_plugin_template(cov, src_tree):
 
 def test_exempt_prefix_is_checked_by_prefix():
     assert orphan_check.is_exempt("plugins/_template/__init__.py")
-    assert not orphan_check.is_exempt("plugins/trae/__init__.py")
+    assert not orphan_check.is_exempt("plugins/trae_work_cn/__init__.py")
 
 
 def test_find_orphans_reports_why(cov, src_tree):

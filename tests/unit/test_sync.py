@@ -23,8 +23,8 @@ def pipeline(tmp_data_dir, monkeypatch):
     """Fake the three pipeline stages and record the call order."""
     calls = []
 
-    def fake_gather(day, scope=None):
-        calls.append(("gather", day, scope))
+    def fake_gather(day, scope=None, **kwargs):
+        calls.append(("gather", day, scope, kwargs))
         return DayRaw(
             day=day,
             collected_at=datetime(2026, 9, 20, 12, 0, 0),
@@ -94,7 +94,7 @@ def test_lock_is_held_while_pipeline_runs(pipeline):
     """Inside gather the lock must already block a second acquisition."""
     observed = {}
 
-    def probing_gather(day, scope=None):
+    def probing_gather(day, scope=None, **kwargs):
         try:
             with sync._lock(config.SYNC_LOCK_PATH):
                 observed["second"] = "acquired"
@@ -226,6 +226,41 @@ def test_run_ignores_broken_scope_json(pipeline, tmp_data_dir, monkeypatch):
 def test_run_without_scope_json_passes_none(pipeline):
     sync.run(DAY)
     assert pipeline[0][2] is None
+
+
+# --- 快照写保护的明路（ALLOW_SHRINK=1）---
+#
+# 写保护本身在 `collect.save_snapshot`；这里测的是**它接得上 CLI** ——
+# 一道拦得住但没法放行的闸门，最后只会逼人去删文件，而删文件更糟。
+
+
+def test_run_forwards_allow_shrink_to_gather(pipeline):
+    sync.run(DAY, allow_shrink=True)
+
+    assert pipeline[0][3] == {"allow_shrink": True}
+
+
+def test_run_defaults_to_not_allowing_shrink(pipeline):
+    """默认必须是**不让**——防护的意义就在默认那一边。"""
+    sync.run(DAY)
+
+    assert pipeline[0][3] == {"allow_shrink": False}
+
+
+def test_parse_allow_shrink_accepts_the_make_style_flag():
+    assert sync._parse_allow_shrink(["sync", "ALLOW_SHRINK=1"]) is True
+
+
+def test_parse_allow_shrink_is_false_when_absent():
+    assert sync._parse_allow_shrink(["sync"]) is False
+
+
+def test_allow_shrink_flag_coexists_with_the_date_flag():
+    """`make sync D=2026-09-18 ALLOW_SHRINK=1` —— 两个参数得能同时出现。"""
+    argv = ["sync", "D=2026-09-18", "ALLOW_SHRINK=1"]
+
+    assert sync._parse_day(argv) == date(2026, 9, 18)
+    assert sync._parse_allow_shrink(argv) is True
 
 
 # --- CLI entry (FR-025) ---

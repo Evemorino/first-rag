@@ -62,8 +62,9 @@ def test_broken_plugin_is_noop_not_fatal(dirs, monkeypatch, caplog):
     assert any("bad" in r.message for r in caplog.records)
 
 
-def test_git_missing_repos_file_is_noop(dirs):
+def test_git_missing_repos_file_is_noop(dirs, monkeypatch):
     # no repos.txt at all — gather still succeeds
+    monkeypatch.setattr(collect, "iter_plugins", lambda: [])  # 本用例只测 repos 缺失，不碰真实源
     day_raw = collect.gather(DAY)
     assert all(m.source != "git" for m in day_raw.materials)
 
@@ -520,3 +521,95 @@ def test_snapshot_top_level_keys_are_the_schema(dirs, monkeypatch):
 
     saved = json.loads(collect.snapshot_path(DAY).read_text(encoding="utf-8"))
     assert set(saved) == {"date", "collected_at", "distill_run", "materials"}
+
+
+# --- 快照写保护：覆盖是无声的，削减必须是有意的 ---
+#
+# 2026-09-26 真踩过：验证"每个新源在有数据的日期单独跑"时，每源一次 `gather`
+# 都带着**只勾了那一个源**的 scope，于是同一天的多来源快照被 1 条素材的单来源
+# 快照**覆盖**。Qdrant 没事（条目是 upsert 的），但 `data/raw/` 是 `make
+# redistill` 的重放基线 —— 之后对那些日期做 diff，比的是"1 条素材的日"和
+# "库里 27 点"，**不会报错，只会给出一个错的 diff**。
+
+def _snapshot_with(dirs, count: int, day=DAY) -> None:
+    """直接落一份 count 条素材的快照，绕过 gather（这些用例只测写保护）。"""
+    day_raw = collect.DayRaw(day=day, collected_at=datetime.now(TZ))
+    day_raw.materials = [
+        RawMaterial(source="fake", ref=f"r{i}", ts=datetime.now(TZ),
+                    kind="message", text=f"t{i}") for i in range(count)]
+    collect.save_snapshot(day_raw)
+
+
+def test_save_snapshot_refuses_to_shrink_an_existing_snapshot(dirs):
+    _snapshot_with(dirs, 8)
+
+    with pytest.raises(collect.SnapshotShrinkError, match="8"):
+        _snapshot_with(dirs, 1)
+
+
+def test_a_refused_shrink_leaves_the_old_snapshot_intact(dirs):
+    """拒写必须发生在写之前 —— 拦下了却已经覆盖，等于没拦。"""
+    _snapshot_with(dirs, 8)
+
+    with pytest.raises(collect.SnapshotShrinkError):
+        _snapshot_with(dirs, 1)
+
+    saved = json.loads(collect.snapshot_path(DAY).read_text(encoding="utf-8"))
+    assert len(saved["materials"]) == 8
+
+
+def test_save_snapshot_allows_shrink_when_explicitly_asked(dirs):
+    """故意换更窄的 scope 重跑是合法操作，所以留了明路。"""
+    _snapshot_with(dirs, 8)
+
+    day_raw = collect.DayRaw(day=DAY, collected_at=datetime.now(TZ))
+    day_raw.materials = []
+    collect.save_snapshot(day_raw, allow_shrink=True)
+
+    saved = json.loads(collect.snapshot_path(DAY).read_text(encoding="utf-8"))
+    assert saved["materials"] == []
+
+
+def test_save_snapshot_writes_when_nothing_is_there_yet(dirs):
+    _snapshot_with(dirs, 3)
+
+    saved = json.loads(collect.snapshot_path(DAY).read_text(encoding="utf-8"))
+    assert len(saved["materials"]) == 3
+
+
+def test_save_snapshot_allows_growth_and_same_count(dirs):
+    """蒸馏会把 distill_run 写回去，素材数不变 —— 那条路不能被拦。"""
+    _snapshot_with(dirs, 2)
+    _snapshot_with(dirs, 2)
+    _snapshot_with(dirs, 3)
+
+    saved = json.loads(collect.snapshot_path(DAY).read_text(encoding="utf-8"))
+    assert len(saved["materials"]) == 3
+
+
+def test_shrink_error_says_how_to_override(dirs):
+    """错误信息是唯一的说明书：只说"不行"会让人去删文件，而删文件更糟。"""
+    _snapshot_with(dirs, 8)
+
+    with pytest.raises(collect.SnapshotShrinkError, match="allow_shrink"):
+        _snapshot_with(dirs, 1)
+
+
+def test_shrink_error_quotes_both_counts(dirs):
+    """8 → 1 和 8 → 7 是两种不同的判断依据，信息里要能看出来。"""
+    _snapshot_with(dirs, 8)
+
+    with pytest.raises(collect.SnapshotShrinkError, match="8.*1|1.*8"):
+        _snapshot_with(dirs, 1)
+
+
+def test_gather_passes_allow_shrink_through(dirs, monkeypatch):
+    """`gather` 是唯一会合法削减素材数的地方（scope + `_cap`），
+    所以它得能把这个开关传下去；否则 CLI 的明路是断的。"""
+    monkeypatch.setattr(collect, "iter_plugins", lambda: [])
+    _snapshot_with(dirs, 5)
+
+    day_raw = collect.gather(DAY, allow_shrink=True)
+
+    saved = json.loads(collect.snapshot_path(DAY).read_text(encoding="utf-8"))
+    assert len(saved["materials"]) == len(day_raw.materials) == 0

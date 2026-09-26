@@ -50,7 +50,7 @@ def world(tmp_data_dir, monkeypatch):
     # 当日无素材（gather 为空）+ retention 0
     monkeypatch.setattr(config, "COLLECTION", TEST_COLLECTION)
     monkeypatch.setattr(sync.collect, "gather",
-                        lambda day, scope=None: collect.DayRaw(
+                        lambda day, scope=None, **kw: collect.DayRaw(
                             day=day, collected_at=datetime.now(tz=config.TZ)))
     monkeypatch.setattr(sync.distill, "distill", lambda day_raw: [])
     monkeypatch.setattr(sync.ingest, "upsert", lambda entries: ingest.Report(0))

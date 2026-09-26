@@ -112,11 +112,15 @@ def _load_scope() -> dict | None:
         return None
 
 
-def run(day: date | None = None) -> dict:
-    """One full sync for `day` (default today). Returns a summary dict."""
+def run(day: date | None = None, *, allow_shrink: bool = False) -> dict:
+    """One full sync for `day` (default today). Returns a summary dict.
+
+    `allow_shrink` 允许覆盖一份素材数更多的同日快照，默认**不允许**；
+    `ALLOW_SHRINK=1` 是明路，理由见 `collect.save_snapshot`。
+    """
     day = day or datetime.now(tz=config.TZ).date()
     with _lock(config.SYNC_LOCK_PATH):
-        day_raw = collect.gather(day, _load_scope())
+        day_raw = collect.gather(day, _load_scope(), allow_shrink=allow_shrink)
         entries = distill.distill(day_raw)
         report = ingest.upsert(entries)
         removed = cleanup_raw(now=datetime.now(tz=config.TZ).date())
@@ -142,6 +146,11 @@ def _parse_day(argv: list[str]) -> date | None:
     return None
 
 
+def _parse_allow_shrink(argv: list[str]) -> bool:
+    """`ALLOW_SHRINK=1`（Makefile 形式）。见 `collect.save_snapshot`。"""
+    return any(arg == "ALLOW_SHRINK=1" for arg in argv[1:])
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry. 0 on success, non-zero on any failure (spec Edge Cases)."""
     config.load_env()
@@ -151,8 +160,9 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
     )
     try:
-        day = _parse_day(sys.argv if argv is None else argv)
-        summary = run(day)
+        argv = sys.argv if argv is None else argv
+        day = _parse_day(argv)
+        summary = run(day, allow_shrink=_parse_allow_shrink(argv))
     except SyncInProgressError as exc:
         logger.error("%s", exc)
         return 2

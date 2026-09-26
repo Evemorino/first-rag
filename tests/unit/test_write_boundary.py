@@ -312,3 +312,162 @@ def test_the_sanctioned_caller_may_still_call_it(tmp_path, monkeypatch):
     make_tree(tmp_path, monkeypatch, {"src/scope.py": SCOPE_MODULE})
 
     assert wbc.scan(Path("src"), registry=BYPASS_REGISTRY) == []
+
+
+# --- SQLite 只读（NFR-001 / AC-017）---
+#
+# 上面两条规则管的是「写到哪」，这里管的是「怎么打开」。分开是因为
+# `sqlite3.connect(path)` 在 AST 里**不像一个写入点**：它没有 mode 参数、
+# 不落在 WRITE_METHODS 里、路径也不是 Path.home() 派生的字面量。但它会对
+# 源目录做的事和写一模一样 —— 建 -wal / -shm / -journal，并在退出时改
+# journal mode（SQLite 默认从 delete 切到 wal 是会真的写回数据库头的）。
+# 宪法 V 只说了一个字：只读。
+
+SQLITE_PLAIN = '''\
+"""Reads a tool's SQLite state the obvious way."""
+
+import sqlite3
+
+
+def read_messages(db) -> list:
+    con = sqlite3.connect(db)
+    return con.execute("SELECT * FROM messages").fetchall()
+'''
+
+SQLITE_BARE_IMPORT = '''\
+"""The same mistake, spelled with a bare import."""
+
+from sqlite3 import connect
+
+
+def read_messages(db) -> list:
+    con = connect(db)
+    return con.execute("SELECT * FROM messages").fetchall()
+'''
+
+SQLITE_READONLY = '''\
+"""Reads a tool's SQLite state without ever opening it for writing."""
+
+import sqlite3
+
+
+def read_messages(db) -> list:
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    return con.execute("SELECT * FROM messages").fetchall()
+'''
+
+# URI 形状，但没有 mode=ro。`file:` 后面不写 mode 默认是 **rw** ——
+# 看起来像"已经用 URI 了"，其实和裸 connect 一样能写。
+SQLITE_URI_NO_MODE = '''\
+"""Reads a tool's SQLite state through a URI that still says nothing about mode."""
+
+import sqlite3
+
+
+def read_messages(db) -> list:
+    con = sqlite3.connect(f"file:{db}", uri=True)
+    return con.execute("SELECT * FROM messages").fetchall()
+'''
+
+# 最隐蔽的一种：字符串里明明写着 mode=ro，却漏了 uri=True。这时 sqlite3 把它
+# 当成**普通文件名**，于是在 cwd 下创建一个名叫 `file:...?mode=ro` 的新库 ——
+# 既不只读，又凭空多出一个文件。
+SQLITE_NO_URI_KWARG = '''\
+"""Wrote the URI but forgot to tell sqlite3 it is one."""
+
+import sqlite3
+
+
+def read_messages(db) -> list:
+    con = sqlite3.connect(f"file:{db}?mode=ro")
+    return con.execute("SELECT * FROM messages").fetchall()
+'''
+
+
+def _only_problem(tmp_path, monkeypatch, source: str) -> wbc.Problem:
+    make_tree(tmp_path, monkeypatch, {"src/plugins/demo/__init__.py": source})
+    problems = wbc.scan(Path("src"), registry={})
+    assert len(problems) == 1, problems
+    return problems[0]
+
+
+def test_sqlite_connect_without_a_readonly_uri_is_a_violation(tmp_path, monkeypatch):
+    """裸 connect() 判红，而且要指名道姓是哪个文件哪一行。"""
+    problem = _only_problem(tmp_path, monkeypatch, SQLITE_PLAIN)
+
+    assert (problem.file, problem.rule, problem.lineno) == (
+        "src/plugins/demo/__init__.py", "sqlite-mode", 7)
+
+
+def test_a_bare_connect_import_is_still_caught(tmp_path, monkeypatch):
+    """`from sqlite3 import connect` 之后叫 `connect`，不叫 `sqlite3.connect`。
+
+    只认 `sqlite3.connect` 这个属性形状的话，换个导入写法就整条溜过去了 ——
+    而换写法不需要任何理由，写插件的人顺手就写了。
+    """
+    problem = _only_problem(tmp_path, monkeypatch, SQLITE_BARE_IMPORT)
+
+    assert problem.rule == "sqlite-mode"
+
+
+@pytest.mark.parametrize("source, why", [
+    (SQLITE_URI_NO_MODE, "file: 后面不写 mode，SQLite 默认按 rw 打开"),
+    (SQLITE_NO_URI_KWARG, "漏了 uri=True，那个字符串会被当成普通文件名"),
+])
+def test_a_half_formed_uri_is_not_read_only(tmp_path, monkeypatch, source, why):
+    """两种"看起来已经用上只读 URI 了"的形状，都不算数。
+
+    这条规则最容易被糊弄过去的地方就在这儿：写了 `file:` 就有了安全感，
+    实际两种漏法都还留着写的能力（或者更糟 —— 凭空造一个文件）。
+    """
+    problem = _only_problem(tmp_path, monkeypatch, source)
+
+    assert problem.rule == "sqlite-mode", why
+
+
+def test_a_readonly_uri_is_clean(tmp_path, monkeypatch):
+    """对照组：写对了就必须放行。
+
+    只测"抓到没写 mode=ro 的"的话，一个逢 connect 必报的实现也能过 ——
+    那 B 族三个插件就没法写了，门禁会变成把它们绕过去的原因。
+    """
+    make_tree(tmp_path, monkeypatch,
+              {"src/plugins/demo/__init__.py": SQLITE_READONLY})
+
+    assert wbc.scan(Path("src"), registry={}) == []
+
+
+def test_the_sqlite_violation_says_how_to_fix_it(tmp_path, monkeypatch):
+    """报错要说清改成什么样子。
+
+    这条门禁的修复方式不是"去登记一下"，而是改代码，所以提示里必须带着那句
+    能直接抄的写法 —— 否则每个人都会先来问一遍。
+    """
+    problem = _only_problem(tmp_path, monkeypatch, SQLITE_PLAIN)
+
+    assert "mode=ro" in problem.detail
+    assert "uri=True" in problem.detail
+
+
+REDIS_LIKE_CONNECT = '''\
+"""Opens a cache connection. Nothing to do with SQLite."""
+
+import redis
+
+
+def warm(client: "redis.Redis") -> None:
+    conn = client.connect()
+    conn.ping()
+'''
+
+
+def test_connect_on_a_non_sqlite_object_is_not_flagged(tmp_path, monkeypatch):
+    """别的库也有 `.connect()`，别把人家一起判了。
+
+    门禁一旦开始误伤正常代码，第一个后果就是有人把它加进 SKIP —— 那时候
+    真正该拦的那条也没了。所以只认 sqlite3 的 connect：属性接收者是
+    sqlite3（或其别名），或者名字来自 `from sqlite3 import connect`。
+    """
+    make_tree(tmp_path, monkeypatch, {"src/cache.py": REDIS_LIKE_CONNECT})
+
+    assert wbc.scan(Path("src"), registry={}) == []
