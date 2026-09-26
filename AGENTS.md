@@ -30,8 +30,8 @@ make embed-test    # 首次：真调 Ark 验证嵌入模型与维度，建集合
 make sync          # 当日采集→蒸馏→入库（幂等，可重复跑）
 make sync D=2026-09-18   # 补跑历史日期（AC-009）
 make log m="想法" t=idea  # 手动快记 → notes/inbox.md
-make ask Q="最近学了什么" --type error --since 7d   # 检索问答
-make ask Q="最近学了什么" --stream                 # 流式问答（边生成边打；首字 ~0.7s）
+make ask Q="最近学了什么" ARGS="--type error --since 7d"   # 检索问答（额外参数必须走 ARGS=）
+make ask Q="最近学了什么" ARGS=--stream                    # 流式问答（边生成边打；首字 ~0.7s）
 make scope         # 交互式选择采集范围（写 config/scope.json）
 make redistill D=2026-09-18        # 重蒸馏对照（只看 diff）
 make redistill D=2026-09-18 APPLY=1  # 确认后整组替换
@@ -73,7 +73,10 @@ src/
   sync.py          # 串联主链路 + .sync.lock + retention 清理
   redistill.py     # 重蒸馏对照编排（diff 先行，确认后替换）
   log.py / scope.py# 快记与范围选择入口
-  plugins/         # 采集插件：claude_code / codex / kimi_code / trae / _template
+  plugins/         # 11 个采集插件 + _template（清单与产品目录见 README「支持的数据源」）
+                   # JSONL 族：claude_code / codex / kimi_code / qoder / qoder_cn /
+                   #           workbuddy_ai / trae / trae_work_cn
+                   # SQLite 族：opencode / zcode / hermes（一律 mode=ro，见 README 隐私节）
   api/app.py       # FastAPI 薄壳（路由只做校验与调用）
 scripts/crap.py    # CRAP 计算器：radon 复杂度 × coverage 覆盖率
 scripts/orphan_check.py  # 孤儿模块：找出零覆盖的 src/ 模块（CRAP 抓不到）
@@ -97,7 +100,10 @@ specs/001-learning-memory-rag/  # spec/plan/data-model/contracts/tasks
 ## 硬约束（违者即错，出处见宪法）
 
 - **写入边界（NON-NEGOTIABLE）**：运行时只写 `data/`、`notes/`；临时产物用系统 tmp；
-  产品源目录（`~/.claude`、`~/.codex`、`~/.kimi-code`、`~/.trae-cn`）严格只读。
+  11 个产品源目录（清单见 README「支持的数据源」）严格只读。SQLite 三个源另有
+  硬性要求：必须 `sqlite3.connect(f"file:{path}?mode=ro", uri=True)`，普通连接会
+  在源目录落 `-wal`/`-shm` —— 那就是写入；凭据按路径与表（各有 `ALLOWED_TABLES`）
+  双向排除，**不整库遍历**。
   由 `scripts/write_boundary_check.py` 守：产品根写入是硬法（登记也豁免不了），
   而 `src/` 里**每个**写入点都必须在 `WRITE_SITES` 里登记「允许写到哪 + 为什么」，
   兜底同样是拒绝。唯一的枚举例外是 `config/scope.json`（宪法 v2.1.0 写死：只此
