@@ -21,6 +21,7 @@ uv run python -m src.redistill D=2026-09-18 [--apply]    # = make redistill
 uv run python scripts/embed_test.py          # = make embed-test
 uv run python scripts/rerun_overlap_report.py [--day 2026-09-24]  # = make rerun-overlap（只读）
 uv run python scripts/collect_probe.py --day 2026-09-25 [--source qoder]  # = make probe（只读，不写盘）
+uv run python scripts/batch_edge_probe.py [--day 2026-09-25]  # = make batch-edges（只读，跨批关联边观测）
 uv run uvicorn src.api.app:app --port 8300   # = make serve
 ```
 
@@ -93,6 +94,7 @@ scripts/mutant_recheck.py      # 把存活变异体手工打进源码重跑测�
 scripts/baseline_check.py      # 文档基线核对：mutants/ 真实结果 vs README 写死的数字
 scripts/gate_selftest.py       # 门禁自检：给 15 个钩子各植入一个违规，断言它真会红
 scripts/rerun_overlap_report.py # 同日重跑重叠度（只读 Qdrant）：NN 分布 vs novelty_threshold
+scripts/batch_edge_probe.py  # 跨批关联边（只读 Qdrant）：同批/跨批/跨运行三组的边有没有（ADR-12 观测项）
 tests/mutmut_compat.py  # mutmut 3.x 对 `src.` 包名的兼容补丁（见文件头）
 config/            # schema.json（类型/rubric/检索/trae 映射/保留期）、repos.txt（git 采集仓库清单，
                    # 一行一个绝对路径；`~` 不展开）；scope.json 只在人跑过 `make scope` 后才存在

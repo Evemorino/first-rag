@@ -8,7 +8,7 @@ PY = uv run --no-sync python
 .PHONY: cov crap crap-observe mutation mutation-selfcheck hooks
 .PHONY: baseline baseline-update orphans orphans-top
 .PHONY: layers layers-list size size-top boundary boundary-list gate-selftest
-.PHONY: schema-check migrate-trae rerun-overlap probe
+.PHONY: schema-check migrate-trae rerun-overlap batch-edges probe
 .PHONY: hooks hooks-run
 
 # Infrastructure: the only container is Qdrant (PRD §6, constitution VI)
@@ -138,6 +138,19 @@ migrate-trae:
 # 只做 Qdrant scroll/query，不写任何地方；连不上退出码 2（先 `make up`）。
 rerun-overlap:
 	$(PY) scripts/rerun_overlap_report.py $(if $(D),--day $(D)) $(ARGS)
+
+# --- 跨批关联边（只读诊断，T087） ---
+# ADR-12 记下的副作用：切批后 source_refs 只能引用本批素材，同一事件分在相邻两批
+# 时蒸馏期就断链，只能等库内相似度补。这里把「能不能补回」量出来 —— 按
+# 同批 / 跨批 / 跨运行 三组给「> 阈值的对数 / 其中有边的对数」，并用
+# data/raw/<day>.json 按 batch_max_chars 重建批次归属（快照被覆盖过的日期算不出
+# 批次，单列 unknown，不假装算出来了）。
+#   全部日期： make batch-edges
+#   单日明细： make batch-edges D=2026-09-25
+#   换阈值：   make batch-edges ARGS="--threshold 0.80"
+# 只做 Qdrant scroll，不写任何地方；连不上退出码 2（先 `make up`）。
+batch-edges:
+	$(PY) scripts/batch_edge_probe.py $(if $(D),--day $(D)) $(ARGS)
 
 # --- 只读采集探针（不写任何文件，T083） ---
 # AC-015 验证的前半：「这个源今天有素材吗」。跑的就是 collect.gather(persist=False)
