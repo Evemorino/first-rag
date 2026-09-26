@@ -35,6 +35,7 @@ FORWARDED = {
 # 那张表完全一样 —— "README 写了可用，配方就得转发"，只是锚点换了个字符串。
 FORWARDED_SCRIPTS = {
     "rerun-overlap": ("scripts/rerun_overlap_report.py", ("D", "ARGS")),
+    "probe": ("scripts/collect_probe.py", ("D", "S")),
 }
 
 

@@ -69,6 +69,51 @@ def test_gather_marks_the_day_as_collected_not_as_a_finished_run(dirs, monkeypat
     assert saved["distill_run"] == {"status": "collected"}
 
 
+def test_gather_persist_false_collects_but_writes_nothing(dirs, monkeypatch):
+    """T083：只读探针路径 —— 采集照跑、`DayRaw` 照给，但一个字节都不写。
+
+    断言必须落在**盘上**：返回值对不对是另一件事，"没写盘"才是这条路径存在的理由
+    （`data/raw/` 是 `make redistill` 的重放基线，本仓库丢过它，含不可恢复的日期）。
+    """
+    monkeypatch.setattr(collect, "iter_plugins",
+                        lambda: [_fake_plugin(lambda r: RawMaterial(
+                            source="fake", ref="x", ts=datetime(2026, 9, 18, 10, tzinfo=TZ),
+                            kind="message", text="hello", meta={}))])
+
+    day_raw = collect.gather(DAY, persist=False)
+
+    assert not collect.snapshot_path(DAY).exists()
+    assert [m.text for m in day_raw.materials] == ["hello"]
+
+
+def test_gather_persist_false_leaves_an_existing_snapshot_byte_identical(dirs, monkeypatch):
+    """已有快照也不能被动到 —— 探针最危险的形状不是"没写"，是"把好快照写坏"。"""
+    monkeypatch.setattr(collect, "iter_plugins",
+                        lambda: [_fake_plugin(lambda r: RawMaterial(
+                            source="fake", ref="x", ts=datetime(2026, 9, 18, 10, tzinfo=TZ),
+                            kind="message", text="hello", meta={}))])
+    collect.gather(DAY)  # 先正常落一份
+    path = collect.snapshot_path(DAY)
+    before = (path.read_bytes(), path.stat().st_mtime_ns)
+
+    collect.gather(DAY, persist=False)
+
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+
+
+def test_gather_persist_false_and_true_see_the_same_materials(dirs, monkeypatch):
+    """两种模式的返回值必须一致，否则探针量到的不是 sync 会看到的东西。"""
+    monkeypatch.setattr(collect, "iter_plugins",
+                        lambda: [_fake_plugin(lambda r: RawMaterial(
+                            source="fake", ref="x", ts=datetime(2026, 9, 18, 10, tzinfo=TZ),
+                            kind="message", text="hello", meta={}))])
+
+    probed = collect.gather(DAY, persist=False)
+    persisted = collect.gather(DAY)
+
+    assert [m.text for m in probed.materials] == [m.text for m in persisted.materials]
+
+
 def test_broken_plugin_is_noop_not_fatal(dirs, monkeypatch, caplog):
     def bad_discover(day):
         raise RuntimeError("boom")

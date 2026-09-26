@@ -8,7 +8,7 @@ PY = uv run --no-sync python
 .PHONY: cov crap crap-observe mutation mutation-selfcheck hooks
 .PHONY: baseline baseline-update orphans orphans-top
 .PHONY: layers layers-list size size-top boundary boundary-list gate-selftest
-.PHONY: schema-check migrate-trae rerun-overlap
+.PHONY: schema-check migrate-trae rerun-overlap probe
 .PHONY: hooks hooks-run
 
 # Infrastructure: the only container is Qdrant (PRD §6, constitution VI)
@@ -138,6 +138,17 @@ migrate-trae:
 # 只做 Qdrant scroll/query，不写任何地方；连不上退出码 2（先 `make up`）。
 rerun-overlap:
 	$(PY) scripts/rerun_overlap_report.py $(if $(D),--day $(D)) $(ARGS)
+
+# --- 只读采集探针（不写任何文件，T083） ---
+# AC-015 验证的前半：「这个源今天有素材吗」。跑的就是 collect.gather(persist=False)
+# —— 采集照跑、逐源计数照给，但不写 data/raw/：那份快照是 make redistill 的重放
+# 基线，本仓库弄丢过（v0.7.4，含不可恢复的日期）。探针跑前跑后自校快照指纹，
+# 变了就退出 1（这条路径没有门禁盯着 —— 写入边界门禁扫的是 src/ —— 所以它自己证）。
+#   全源：  make probe D=2026-09-25
+#   单源：  make probe D=2026-09-25 S=qoder
+# 源目录只读（宪法 V），不需要 Qdrant，也不调用任何 LLM。
+probe:
+	$(PY) scripts/collect_probe.py --day $(D) $(if $(S),--source $(S))
 
 # 变异自检：先跑这个，再跑 mutation。
 # 它塞一个已知必死的改动进去，看测试抓不抓得住 —— 抓不住说明工具或断言有问题，

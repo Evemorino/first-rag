@@ -20,6 +20,7 @@ uv run python -m src.scope                   # = make scope
 uv run python -m src.redistill D=2026-09-18 [--apply]    # = make redistill
 uv run python scripts/embed_test.py          # = make embed-test
 uv run python scripts/rerun_overlap_report.py [--day 2026-09-24]  # = make rerun-overlap（只读）
+uv run python scripts/collect_probe.py --day 2026-09-25 [--source qoder]  # = make probe（只读，不写盘）
 uv run uvicorn src.api.app:app --port 8300   # = make serve
 ```
 
@@ -33,6 +34,7 @@ make sync D=2026-09-18   # 补跑历史日期（AC-009）
 make log m="想法" t=idea  # 手动快记 → notes/inbox.md
 make ask Q="最近学了什么" ARGS="--type error --since 7d"   # 检索问答（额外参数必须走 ARGS=）
 make ask Q="最近学了什么" ARGS=--stream                    # 流式问答（边生成边打；首字 ~0.7s）
+make probe D=2026-09-25 S=qoder  # 只读采集探针：逐源素材数，不写任何文件
 make scope         # 交互式选择采集范围（写 config/scope.json）
 make redistill D=2026-09-18        # 重蒸馏对照（只看 diff）
 make redistill D=2026-09-18 APPLY=1  # 确认后整组替换

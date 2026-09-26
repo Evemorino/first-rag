@@ -32,11 +32,32 @@ make test                    # unit + integration（需 make up 先行）
 
 ## 验一个采集源是否真的通（AC-015 的方法）
 
-**共同前提**：`make sync` 会往**真库** upsert 点，这部分**不可还原**（验的就是入库）；
-下面这套只保护 `data/raw/` 这份 `make redistill` 的**重放基线**。
+AC-015 要回答两件事，**方法分开** —— 一件不用写盘，一件必须写盘。
 
-**A. 该源在现存快照里有素材**（`claude_code` / `codex` / `kimi_code` / `trae` /
-`trae_work_cn` / `qoder` / `qoder_cn`）：
+### ① 这个源在某天有素材吗 —— `make probe`（只读，零落盘）
+
+```sh
+DAY=2026-09-25
+make probe D=$DAY            # 全源：逐源素材条数
+make probe D=$DAY S=qoder    # 只看一个源：合计只算 qoder
+```
+
+`make probe` 跑的就是 `collect.gather(..., persist=False)`：采集照跑、逐源计数照给，
+`data/raw/` **一个字节都不写** —— 那份快照是 `make redistill` 的重放基线，v0.7.4 弄丢过
+它，其中几天不可恢复（所以问一句"有没有素材"不该动它）。两条读法：
+
+- **素材 0 条是成功**，不是故障：那就是这个源今天真的没有东西可采。
+- `S=<源>` 的合计只算那一个源。git 提交与 `notes/` 手动快记（`scope` 关不掉这两类）
+  会列在分隔线下面并标明"未计入合计" —— 它们当天确实被采到了，只是不回答这个问题。
+
+要验的源在**现存快照**里有素材的：`claude_code` / `codex` / `kimi_code` / `trae` /
+`trae_work_cn` / `qoder` / `qoder_cn`；在任何现存快照里都没有素材、必须做一次新采集的：
+`zcode` / `workbuddy_ai` / `hermes`（`hermes` 的库为空，AC-015 对它不适用，见 AC-017）。
+
+### ② 入库路径通不通 —— 必须真跑一次 sync（这一步写盘，先备份）
+
+`make sync` 要往**真库** upsert 点，这部分**不可还原**（验的就是入库）。会写盘的只有
+`data/raw/<day>.json`，按下面做就能还原：
 
 ```sh
 DAY=2026-09-25
@@ -51,10 +72,6 @@ diff -r "$BK/raw" data/raw && echo "raw 已还原"     # 6) 核对，必须无�
 rm -f config/scope.json                             # 7) 仅当第 0 步显示原本没有它
 rm -rf "$BK"
 ```
-
-**B. 该源在任何现存快照里都没有素材**（`zcode` / `workbuddy_ai` / `hermes`）：必然要一次
-**新采集**，同样先做 A 的 1–2 步；区别是当天没有基线可保护，跑到哪一天就新增哪份快照，
-跑完按 A 的 5–7 步还原。
 
 **怎么判「入库成功」**（AC-015 ②）：`data/raw/<day>.json` 的 `distill_run.per_source[<源>]`
 给蒸馏侧的 `materials` / `kept`，`make sync` 的汇总给入库侧被新颖度拦掉的

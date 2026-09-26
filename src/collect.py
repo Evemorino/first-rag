@@ -55,15 +55,24 @@ def _iso(ts: datetime | None) -> str | None:
 
 
 def gather(day: date, scope: dict | None = None, *,
-           allow_shrink: bool = False) -> DayRaw:
+           allow_shrink: bool = False, persist: bool = True) -> DayRaw:
     """Collect all sources for `day` and persist the snapshot (FR-006).
 
     `scope` (config/scope.json, FR-005) filters tools when present:
     {"tools": {"claude_code": true, ...}, "projects": {...}}.
+    **缺键 = 启用**（`scope.get("tools", {}).get(name, True)`）—— 想只留一个源，
+    必须把其余显式写 false，不能指望"没提到的就跳过"。
     Missing sources are no-ops with a log line, never fatal (NFR-004).
 
     `allow_shrink` 透传给 `save_snapshot`：**窄 scope 重跑是唯一会合法削减
     素材数的路**（还有 `_cap`，但它是确定性的），所以明路的开关开在这里。
+
+    `persist=False` 是**只读探针**路径：采集照跑、`DayRaw` 照返，但不写
+    `data/raw/<day>.json`。持久化仍然归 collect（FR-006 没变），只是调用方可以
+    把它关掉 —— 给「想验采集、又不能碰重蒸馏基线」的场景用（AC-015 的验证方法，
+    T083）。此时 `allow_shrink` 无意义（没有写入可放行）。注意本项目已有的习惯：
+    `data/raw/` 是 `make redistill` 的**重放基线**，且已经被弄丢过，所以能不写
+    就不写。
     """
     day_raw = DayRaw(day=day, collected_at=datetime.now(tz=config.TZ))
     schema = config.load_schema()
@@ -88,7 +97,8 @@ def gather(day: date, scope: dict | None = None, *,
     day_raw.materials.extend(_note_materials(day))
 
     _cap(day_raw, schema["distill"]["max_raw_chars"])
-    save_snapshot(day_raw, allow_shrink=allow_shrink)
+    if persist:
+        save_snapshot(day_raw, allow_shrink=allow_shrink)
     return day_raw
 
 

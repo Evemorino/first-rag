@@ -298,3 +298,25 @@ def gather(day, scope=None, *, allow_shrink=False, persist=True):
 
 **本次不动**：`sync.run`、`distill` 的两处 `save_snapshot`、`ALLOW_SHRINK` 的语义 ——
 一次只动一个变量，否则回退时说不清是哪一处带来的。
+
+### 9.5 已落地（2026-09-26，v0.7.11）—— 与 §9.4 的差异逐条对照
+
+§9.4 的 1–3、5、6 按原样执行：`persist` 参数（`src/collect.py:gather`）、探针脚本
+（`scripts/collect_probe.py` + `make probe`）、单测（`tests/unit/test_collect.py` 3 条 +
+`tests/unit/test_collect_probe.py` 12 条）、PRD v0.7.11 变更行、门禁全跑与变异批次重跑
+（README 基线 1918 → **1919 杀 / 246 活 / 14 无测试 → 88.6%**）。
+
+**与 §9.4 的差异两条**：
+
+- **第 4 条**：`quickstart.md` 不只改「①素材非空」，整段按「① 零落盘探针 / ② 必须写盘的 sync」
+  重写 —— ① 不再需要「备份 → 单源跑 → 还原」那一整套，那套现在只服务于 ②（它本来就要写盘）。
+- **§9.2 没预见到的**：`--source` 的口径。只写 `{"tools": …}` 的 scope **关不掉 git**（git 走
+  `projects`，缺键 = 启用），于是 `--source qoder` 在 2026-09-25 把 6 条 git 提交算进了 qoder 的
+  合计 —— 读起来正是「qoder 有素材」。处置：**不动 `gather` 的 scope 语义**（那是 FR-005 的既有
+  口径），改在 `render` 里只把目标源算进合计、其余来源另列并标「未计入合计」。`notes/` 手动快记同理
+  （`gather` 里根本没有对应开关）。
+
+**§9.3 那条风险（`persist=False` 没有门禁盯着）的最终处置**：探针自校（跑前跑后比对 `data/raw/<day>.json`
+的存在性 + 大小/mtime，变了退出 1）+ 测试（3 条直接钉住「不写盘」与「已有快照逐字节不变」）。另补一条
+手工 oracle：`if persist:` 的**条件本身 mutmut 不生成变异体**（3.x 的算子集不给裸布尔条件做 `if not x:`），
+所以用手工两向验证覆盖 —— 把守卫删掉（改成无条件落盘）→ 3 条用例红；把条件取反 → 6 条红。
