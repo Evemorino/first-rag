@@ -1,15 +1,41 @@
 # first-rag
 
-个人学习记忆系统：自动采集四个 AI 编码工具的当日会话 + git 提交 + 手动快记，
+个人学习记忆系统：自动采集 11 个 AI 编码工具的当日会话 + git 提交 + 手动快记，
 LLM 蒸馏为结构化学习条目，幂等存入本地 Qdrant，支持带过滤的语义检索与
 引用式问答。
 
 ```
-claude-code / codex / kimi-code / trae ─┐
+11 个采集源（见下表）───────────────────┐
 git 提交（config/repos.txt）            ├─→ collect → data/raw/快照 → distill（脱敏/熔断）→ ingest（幂等）→ Qdrant
 手动快记（notes/inbox.md，轻路径）      ─┘                                                    ↓
                                                                       make ask（过滤检索 + 关联扩展 + 引用回答）
 ```
+
+## 支持的数据源
+
+| source | 产品目录 | 读法 |
+|---|---|---|
+| `claude_code` | `~/.claude/projects` | JSONL |
+| `codex` | `~/.codex/sessions` | JSONL |
+| `kimi_code` | `~/.kimi-code/sessions` | JSONL |
+| `qoder` | `~/.qoder/projects` | JSONL |
+| `qoder_cn` | `~/.qoder-cn/projects` | JSONL |
+| `workbuddy_ai` | `~/.workbuddy-ai/projects` | JSONL |
+| `trae` | `~/.trae/memory` | JSONL（pre-summarized）† |
+| `trae_work_cn` | `~/.trae-cn/memory` | JSONL（pre-summarized）† |
+| `opencode` | `~/.local/share/opencode/opencode.db` | SQLite 只读 |
+| `zcode` | `~/.zcode/cli/db/db.sqlite` | SQLite 只读 |
+| `hermes` | `~/.hermes/state.db` | SQLite 只读 |
+
+† **pre-summarized 路径**：Trae 系自己已经总结过会话，条目由 `{intent, actions,
+outcome, learned}` 轻量转换直并入库，**不走 LLM 蒸馏**（重复蒸馏既费 token 又会
+再幻觉）。类型映射规则见 `config/schema.json` 的 `trae_type_map`。
+
+**`~/.trae-cn` 与 `~/.trae` 是一对容易搞反的名字**：v0.7.1 把原 `trae` 插件按
+名实重新命名为 `trae_work_cn`（它读的一直是 `~/.trae-cn`），`trae` 之名转给
+`~/.trae`。改名会改变条目 ID（ID = `uuid5(source|date|content_hash)`，source 是
+身份字段），存量 9 条由 `scripts/migrate_trae_source.py` 一次性迁移——**该脚本的
+判据是 ref 路径而非 source 名**，且重跑会默认拒跑（退出码 2），详见文件头。
 
 ## 安装
 
@@ -29,13 +55,18 @@ make embed-test                        # 真调验证嵌入模型与维度并建
 
 ```sh
 make sync                              # 晚上跑一次：当日素材 → 蒸馏 → 入库（幂等可重跑）
+make sync D=2026-09-18 ALLOW_SHRINK=1  # 窄 scope 重跑同一天：明示允许用更小的快照覆盖
 make log m="踩了个坑：..." t=error     # 随手快记（未标类型默认 reflection）
-make ask Q="我在 qdrant 上踩过什么坑" --type error --since 7d
-make ask Q="..." --stream              # 流式：边生成边打（首字 ~0.7s，不必等整段）
+make ask Q="我在 qdrant 上踩过什么坑" ARGS="--type error --since 7d"
+make ask Q="..." ARGS=--stream         # 流式：边生成边打（首字 ~0.7s，不必等整段）
 make scope                             # 勾选采集哪些工具/项目（写 config/scope.json）
 make redistill D=2026-09-18            # 改完蒸馏标准后对照 diff；加 APPLY=1 整组替换
-make serve                             # 按需 API：/health /log /sync /ask /ask/stream
+make serve                             # 按需 API：/health /log /sync /sync/status /ask /ask/stream
 ```
+
+> `ask` 的额外参数**必须经 `ARGS=` 传**（`ARGS="--type error --since 7d"`）：配方只转发
+> `$(Q)` 和 `$(ARGS)`，直接写成 `make ask Q=… --type error` 会被 make 当成未知选项、
+> 以退出码 2 停下。想绕过 make 就直接调 `uv run python -m src.ask Q="…" --type error`（见 AGENTS.md）。
 
 ## 质量指标
 
@@ -45,7 +76,8 @@ make serve                             # 按需 API：/health /log /sync /ask /a
 make hooks        # = uv run pre-commit install
 ```
 
-15 个钩子，按"从便宜到贵"排：大文件/冲突/JSON/YAML/AST → 行尾空白 →
+15 个钩子，按"从便宜到贵"排：大文件/冲突/JSON/YAML/AST → 行尾空白/文件末尾换行
+（`end-of-file-fixer`）→
 **私钥检测**（`detect-private-key`，只认 PEM）→ **令牌扫描**（API key/token 形态，
 `src/secret_patterns.py` 那一套）→ 位置与分层 → 规模 → **写入边界** → pytest →
 CRAP → 孤儿模块。
@@ -84,7 +116,7 @@ CRAP → 孤儿模块。
 ### 门禁自检
 
 ```sh
-make gate-selftest                  # 27 个用例：14 个"该红" + 13 个"该绿"
+make gate-selftest                  # 33 个用例：18 个"该红" + 15 个"该绿"
 uv run python scripts/gate_selftest.py --why    # 打印每个用例为什么这样设计
 ```
 
@@ -195,9 +227,9 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
 ```
 
 - **CRAP** 把复杂度和覆盖率乘在一起：复杂度 23、覆盖 74% 的函数 CRAP 是 32.8，
-  一眼看出该拆还是该补测试。当前基线（2026-09-25，548 用例全绿）：函数内语句
+  一眼看出该拆还是该补测试。当前基线（2026-09-26，844 用例全绿）：函数内语句
   覆盖 90.7%（口径只算函数体内语句，与 pytest 报的全量行覆盖 92% 不是一回事），
-  162 个函数，均值 4.7，最高 21.1，**0 个 crappy**（`config.py:_validate`
+  241 个函数，均值 4.9，最高 21.1，**0 个 crappy**（`config.py:_validate`
   按 section 拆成 6 个小函数；`collect._cap` / `redistill._fetch_day_entries` /
   `claude_code` 错误提取补测试到 100% 覆盖；2026-09-25 从 `ask.py` 拆出的
   `ask_expand.py` 进来时是 100% 覆盖）。
@@ -216,13 +248,29 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   （ask / collect / distill）+ 蒸馏装箱（distill_batches，2026-09-24 随分批一起
   纳入；`secret_patterns` 不加 —— 它只有模块级正则常量、零个函数，生不出变异体），
   见 `pyproject.toml` 的 `only_mutate`。
-  当前基线：1788 个变异体
-  被杀死、189 个存活、14 个无测试覆盖，**变异分数 90.4%**。
+  当前基线：1919 个变异体
+  被杀死、246 个存活、14 个无测试覆盖，**变异分数 88.6%**。
 
   往 `only_mutate` 里加模块时要注意：mutmut 只跑已有 `.meta` 里待检查的变异体，
   **新加的文件不会自动 collect**（它连 `collect` 子命令都没有），加完必须
   `mv mutants /tmp/…` 完整重建一遍才会真正生效 —— 否则就是"配置写了但没跑"，
   又是一个只有数字、没有实质的信号。
+
+  同族的**第二个**坑（2026-09-26 实测撞上）：**给一个既有测试加断言去覆盖一个新
+  函数，映射不会重学。** mutmut 只在出现**新测试名**时才增量重采"函数 → 覆盖它的
+  测试"，于是新函数的变异体跑的是空测试集 → pytest 退出码 5 → 被记成「no tests」
+  （`status_by_exit_code` 里 5 和 33 都是这个桶）。症状是"无测试"桶突然变大，看起来
+  像覆盖变差，其实是**没验证**。修法不必全量重建：`rm mutants/mutmut-stats.json`
+  触发一次全量重采（约 5 秒），再点名重跑 `mutmut run <name>…`。
+  **判据：改了既有测试就得清 stats —— 除非你同时也加了新测试名。**
+
+  这条判据现在有门禁兜着：`make mutation` 收尾的 `baseline_check.py` 会挑出"整个
+  函数的变异体全被判 no tests"的函数，跟它的 `KNOWN_NO_TESTS` 登记表比对 —— 不在
+  表里就红，并把上面那两条处置路径直接打出来；`--update` 也拒绝在这种状态下写数字
+  （映射没判完，那份分数等于没核对过）。登记表里只有两条，都是真的从未被执行过的
+  工厂：`ask_expand._client` / `ingest._client`。
+  **名字认不出来也红**：分组全空会让这条检查永远报"没问题"，而门禁最坏的死法是
+  一直绿着。
 
   还有一个反过来咬人的坑：mutmut 是**原地**改源码跑批的，跑完源码还原了，
   `src/__pycache__` 里却可能留着按变异体字节码编译的 `.pyc`。Python 只比 mtime，
@@ -242,6 +290,10 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
 
   - `collect.x_gather__mutmut_6`（`collected_at` 的 `tz=config.TZ` → `tz=None`）
     手工打进源码后 **409 个测试全绿** —— 真存活，`collected_at` 的时区确实没人断言。
+    **2026-09-26 订正（编号已漂）**：此例当时成立，之后 `0eec544` 补了
+    `test_gather_collected_at_is_shanghai_aware`（断言偏移量，不看"是否相等"—— 本机
+    时区恰好也是 +08，相等判据测不到），该变异体现在**被杀**；它在新编号里是
+    `collect.x_gather__mutmut_8`（`mutmut_6` 已换成"漏传 `day=`"）。见下面第四次跑批。
   - `sync.x__try_lock__mutmut_*` 共 14 条：那是 `except ImportError` 里的 Windows
     `msvcrt` 分支，macOS 上根本不可达。`make mutation-selfcheck` 里本来就记着
     "抓住它就是假杀"，所以这 14 条属预期。
@@ -263,6 +315,59 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   | 快照排版与编码 | 7 | `encoding=` / `indent=` 被动过。其中 `"utf-8"` → `"UTF-8"` 那几条是**语言层面等价**（Python 编解码器名不敏感），任何测试都杀不死 |
   | 平台不可达 | 7 | `sync._try_lock` 的 Windows `msvcrt` 分支，macOS 走不到。selfcheck 里记着"抓住它就是假杀" |
   | 合计 | **212** | |
+
+  **2026-09-26 第二次全量重建（v0.7.8，快照写保护收紧）**：合计 **239
+  条存活**（被杀 1854 / 无测试 14 → **88.6%** —— 开头那行基线由
+  `baseline_check.py` 维护，显示的是**最新一轮**，不是本轮的 1854）。
+  分族：
+
+  | 族 | 条数 |
+  |---|---|
+  | 没抓住形状（未判） | 89 |
+  | 纯文案（人读的字符串） | 73 |
+  | 关键字参数/默认值/计算值被动过 | 28 |
+  | `ensure_ascii`（数据相关） | 22 |
+  | 快照排版与编码 | 8 |
+  | 平台不可达（Windows 分支） | 7 |
+  | 数据文件名大小写 | 7 |
+  | 程序读的字符串被改（键名/枚举值） | 3 |
+  | 边界与比较符 | 2 |
+  | 合计 | **239** |
+
+  这一轮存活数从 214 涨到 239，**推大分母的是两条新的守卫错误信息**：
+  `collect._existing_snapshot` 新增了两条 raise（"结构不对"与"条目不对"），
+  里面的解释性散文产生约 24 条新存活，全部落进"纯文案"族。
+
+  **同一轮里新增的解析逻辑，逻辑类存活为 0。** 逐条核对过：`save_snapshot` +
+  `_existing_snapshot` 的 58 条存活中 13 条是逻辑类（改了代码记号而非字符串内容），
+  **这 13 条全部落在本次未改动的 HEAD 行上** —— `path.parent.mkdir(exist_ok=)` ×3、
+  `encoding="utf-8"` ×3、`json.dumps` 的三个参数默认值 ×6、`isinstance(doc, dict)` ×1。
+  上一轮点名的那两个口子（结构不对当空的放行、条目坏掉读不出 source）已随之关掉。
+
+  **教训（留给下一轮）**：在这个仓库里，往错误信息里多写一句解释，代价是一条存活
+  变异体。分母对解释性文案是敏感的 —— 所以看分数时必须同时看族构成，否则"把话说清楚"
+  会被读成绩效下滑。本项目选择不把文案抄进断言（见"纯文案"族的裁语），
+  于是这个代价是**已知且接受**的，不是待修的缺陷。
+
+  **2026-09-26 第三次跑批（v0.7.9，AC-015 计数落地）**：**被杀 1918 / 存活 246 /
+  无测试 14 → 88.6%**（分母 2107 → 2178，多出的 71 条全落在本版改动过的
+  distill / ingest / sync 三个模块：新函数 + 被改动的行）。首跑报的是
+  1906 / 245 / 27，其中"无测试 23"是上面那个兄弟坑造成的假象 —— 清 stats 重采后
+  13 条拿到真判决（12 杀、1 活），该桶回到 14（无测试 10 + 超时 4）。
+  分族已用 `mutant_recheck.py --summary` 刷新：未判族 89 → 95、关键字/默认值族
+  28 → 29，其余七族不变。
+  **逐条判决（`--run`）没有重跑**：上面那 212 条只覆盖它自己那一轮，本轮多出的 7 条
+  **只有族归属、没有判决**，别读成"已看过没问题"。
+
+  **2026-09-26 第四次跑批（v0.7.11，`gather` 不落盘落地）**：**被杀 1919 / 存活 246 /
+  无测试 14 → 88.6%**（分母 2178 → 2179）。多出来的那 1 条来自新增的 `persist` 参数
+  默认值（`True` → `False`，被新用例杀掉）；本次改动里的 `if persist:` **没有变异体**
+  —— mutmut 3.x 的算子集不给裸布尔条件生成 `if not x:`，这条分支在报告里是隐形的。
+  补法是它自己的 oracle：手工把守卫**删掉**（改成无条件落盘）→ 3 条用例红；把条件
+  **取反** → 6 条红 —— 两向都可观测，只是这不体现在分数上。存活数没变，分族计数也
+  与上一轮逐项相同（`mutant_recheck.py --summary` 复算：未判 95 / 纯文案 73 /
+  关键字 29 / `ensure_ascii` 22 / 排版编码 8 / 平台 7 / 文件名大小写 7 / 程序读的字符串 3 /
+  边界 2）。
 
   **上面这些族计数由 `scripts/mutant_recheck.py --summary` 生成**（入库工具，不再是
   我一次性探针里的临时规则）：它读 `mutants/src/*.meta` 挑出存活变异体，从插桩副本里
@@ -289,8 +394,10 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
 
   **第三桶"24 个无测试覆盖"其实是三种毛病**（本轮按 mutmut 自己的
   `status_by_exit_code` 拆开：无测试 10、段错误 10、超时 4）。只有那 10 条是覆盖盲区
-  （`ask._client` / `ingest._client` 两个工厂），另外 14 条是变异体把进程跑崩或跑超时 ——
-  拿"补测试"去处置崩溃是错的。`scripts/baseline_check.py` 现在每次报数都把这个构成打出来。
+  （`ask_expand._client` / `ingest._client` 两个工厂），另外 14 条是变异体把进程跑崩或跑超时 ——
+  拿"补测试"去处置崩溃是错的。`scripts/baseline_check.py` 现在每次报数都把这个构成打出来，
+  并按 `KNOWN_NO_TESTS` 核对"整函数全判 no tests"的那种（映射过期会长得像覆盖盲区，
+  见上文同族的第二个坑）。
 
   第一次分诊时真缺口是 **17 条**，聚成三个主题，前两个各是一条系统性的盲区：
 
@@ -349,7 +456,8 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
 
   验证方式说明：分桶是规则化的（比较改动前后的字符串字面量、运算符、参数），
   每个桶都抽了样本**手工把变异打进源码再跑测试**确认（例如
-  `collect.x_gather__mutmut_6` 手工植入后 409 个测试全绿 = 真存活；
+  `collect.x_gather__mutmut_6` 手工植入后 409 个测试全绿 = 真存活
+  —— 该例 2026-09-26 已被补测杀掉、编号也漂了，见上面那条订正；
   `sync.x__load_scope__mutmut_4` 同理）。名单以变异体名记录，不再只留数量 ——
   上一版只写"28 个"导致这次完全无法 diff 新增项。
 
@@ -455,10 +563,92 @@ kimi 素材加进来，把那天撑大了"——**这条直觉是错的**，对�
 留这一节是因为它同时记着两件事：**慢和错都可能来自你以为的输入侧，而实际在输出
 侧**；以及"重试"如果重的是同一个请求，它就不是容错，只是把同一次失败花两遍。
 
+### 同日重跑重叠度（只读诊断）
+
+`make sync` 同一天重跑会往库里**累加**（PRD §9 的 FR-007 待澄清项）。多出来的
+条目到底是不是"与前面近似重复"，直接决定该改哪一边：若是重复，要改的是判据
+或阈值；若不是，要改的就是 AC-003 那句"points 数不变"的口径。这条报告把它量
+出来，**不改任何东西**：
+
+```sh
+make rerun-overlap                        # 按日：簇内（IN）与跨运行（EX）两组最近邻并排
+make rerun-overlap D=2026-09-24           # 另出该日的分次运行明细
+make rerun-overlap ARGS="--threshold 0.80"   # 换阈值试算（不改配置）
+```
+
+每天给**两列**，缺一不可：
+
+- **IN**（同一次运行内部）：同一次 `distill` 写出的不同条目，**必须共存** ——
+  这是判据不该碰的地方，也是"阈值能降到多低"的下界。
+- **EX**（跨运行）：`filter_novel` 要看的那个量（本批之外的最近邻）。
+
+读法是**先看 IN 再看 EX**：EX 整片在阈值以下 → 没拦住是对的；**IN max 高过
+EX max → 问题不在阈值** —— 降阈值先误伤真条目，而对真正冗余的那一对（同一次
+运行内部的）依然无能为力，因为 `filter_novel` 把本批 ID 排除在外，同批之间
+根本不比。2026-09-26 实测就是这个形状（全库 221 点：IN max 0.906 > EX max
+0.813，且过 0.82 的 12 条**全部**在簇内）。
+
+判据与 `src/similarity.py:filter_novel` 同源：阈值读 `config/schema.json` 的
+`novelty_threshold`（不抄第二份硬编码），比较的是"每条条目与本簇之外最近邻的
+cosine"——正是 `filter_novel` 排除了本批 ID 之后要看的那个量。同一次 `distill`
+调用写出的条目共享同一个 `created_at`，秒级前缀就是一次运行的指纹。
+
+**簇内那 12 条（6 对）已逐对看过，裁定是「不是问题」**（2026-09-26）：每一对的两条
+都来自**不同素材**（09-25 那四对是两个不同会话各记了同一件事），而 in-run 排除是
+`similarity.py` 里写明的幂等设计（NFR-003）—— 改它等于按素材删产出。唯一的代价是这 6 对
+在库里**没有关联边**（它们最强的邻居恰是同批兄弟，被同一条排除规则挡下），但它们本来就能被
+语义检索取回。证据与杠杆见 `specs/001-learning-memory-rag/fr007-rerun-options.md` §12。
+
+它只做 Qdrant 的 `scroll`/`query_points`，不碰 `data/raw/`、不需要
+`ALLOW_SHRINK`、不落任何文件；连不上 Qdrant 时退出码 2 并提示先 `make up`。
+这个数字是**一次性事实**（随库里内容变），所以它没有门禁、不进基线 —— 只在下
+一次要裁决 FR-007 的口径时重新量一遍。
+
+### 只读采集探针（不写任何文件）
+
+AC-015 验一个采集源时要回答两件事：**这个源今天有素材吗**、**入库路径通不通**。第二件
+必须真跑 `make sync`（它本来就要往真库 upsert）；第一件却不需要写盘 —— 而在 v0.7.11
+之前，问第一件的唯一办法就是跑一次 sync，那会写 `data/raw/<day>.json`，也就是
+`make redistill` 的重放基线（本仓库弄丢过它，v0.7.4，其中几天不可恢复）。探针把这个
+形状断掉：
+
+```sh
+make probe D=2026-09-25              # 全源：逐源素材条数
+make probe D=2026-09-25 S=qoder      # 只看一个源
+```
+
+它跑的就是 `collect.gather(..., persist=False)`：采集照跑、逐源计数照给（与落盘版看到
+的素材完全一致），一个字节都不写。因为这条路径**没有门禁盯着**（写入边界的扫描面是
+`src/`），探针跑前跑后自己比对 `data/raw/<day>.json` 的存在性与大小/mtime，变了就退出
+1 —— "探针不写盘"不是靠注释承诺的。源目录仍是只读（宪法 V，SQLite 三个源一律
+`mode=ro`），不需要 Qdrant，也不调用任何 LLM。**素材 0 条是成功而不是故障**：那就是
+这个源今天真的没有东西可采。
+
+`S=<源>` 的"只看一个源"是**合计口径**上的：其余插件用 `scope` 关掉（省时间），而
+`scope` 关不掉的两类素材 —— git 提交（`projects` 节）与 `notes/` 手动快记（`gather` 里
+没有对应开关）—— 会列在一条分隔线下面并标明"未计入合计"。它们当天确实被采到了，
+只是不回答"这个源有素材吗"。
+
 ## 隐私与数据流向
 
-- **源目录只读**：采集器对 `~/.claude`、`~/.codex`、`~/.kimi-code`、`~/.trae-cn`
-  零写入、零标记；去重状态只依赖库内幂等 ID。
+- **源目录只读**：采集器对 11 个产品根（`~/.claude`、`~/.codex`、`~/.kimi-code`、
+  `~/.qoder`、`~/.qoder-cn`、`~/.workbuddy-ai`、`~/.trae`、`~/.trae-cn`、
+  `~/.local/share/opencode`、`~/.zcode`、`~/.hermes`）零写入、零标记；去重状态只
+  依赖库内幂等 ID —— 不写水位文件，所以"没采到"和"采过了"不靠源目录里的痕迹区分。
+  由 `scripts/write_boundary_check.py` 守（产品根写入是硬法，登记也豁免不了）。
+- **SQLite 源按 `mode=ro` 打开**：三个库（opencode / zcode / hermes）一律用
+  `sqlite3.connect(f"file:{path}?mode=ro", uri=True)`。**已实测的边界**：`mode=ro`
+  不改 `db` 文件本身（逐字节不变），但 SQLite **不保证不落 `-wal`/`-shm`** —— 产品
+  干净退出、sidecar 已被删除时，`mode=ro` 会把它重建出来。这是 SQLite 的固有行为，
+  **没有任何连接参数能同时做到"读得到 WAL 里的最新内容"与"不落 sidecar"**
+  （`immutable=1` 零落盘但会静默丢掉 `-wal` 里的数据，所以不采用）。该规则同样由
+  `write_boundary_check` 机械强制：非 `mode=ro` 的 `sqlite3.connect()` 判红。
+- **凭据不进采集面**：按**路径**（`~/.zcode/v2/credentials*.json`、`~/.hermes/` 下的
+  `.env` 与 `auth.json`、`~/.workbuddy/connectors/`、`~/.qoder-cn/` 下的 `state.json`）
+  与**表**（B 族各有 `ALLOWED_TABLES`：opencode `session_message`、zcode
+  `message`/`part`、hermes `messages`/`sessions`，不整库遍历）双向排除。已实证的是
+  hermes 那一对：跑完全源采集后 `~/.hermes/.env` 与 `auth.json` 的 mtime 未变；
+  其余路径是依据"只开库、不碰文件系统其余部分"的实现推断，**未逐条实测**。
 - **写入边界**：运行时产物只写 `data/`（向量库与 raw 快照）和 `notes/`（快记），
   其余位置零写入；测试 fixture 全走系统临时目录。
 - **密钥**：只从 `.env`（已 gitignore）读取，不出现在代码与提交物中；素材在送往
@@ -476,6 +666,12 @@ kimi 素材加进来，把那天撑大了"——**这条直觉是错的**，对�
   **全是误报**，收紧到 0 之后才敢接进钩子 —— 一道永远红的门禁等于没有门禁。
 - **蒸馏数据流向**：会话素材会发送到火山方舟（Ark）做蒸馏与嵌入。你本就通过
   方舟代理使用这些编码工具，数据流向与现有使用方式一致，无新增暴露面（PRD §9）。
+- **`data/raw/<day>.json` 是重放基线，所以写入有闸门**：同一份快照若会被更少的素材数覆盖，
+  默认**拒写**（`SnapshotShrinkError`）——它不报错才最要命：`make redistill D=<day>` 会拿
+  一份更小的日去对照库里的实际点，**静默给出错误的 diff**。窄 scope 重跑同一天是合法操作，
+  加 `ALLOW_SHRINK=1` 放行。这条闸门是 2026-09-26 真踩之后补的：当时"每个源挑一天单独验证"
+  的那批跑，把 09-18（8 条）和 09-23（26 条）换成了 1 条的单来源快照（Qdrant 没事，
+  受害的是基线）。**已知残留**：闸门只看素材数，"同数量但换了来源"的覆盖拦不住。
 - **备份/迁移**：备份 = 复制 `data/`；换机器 = 复制 `data/` + `config/` + `notes/`。
 
 ## 更多

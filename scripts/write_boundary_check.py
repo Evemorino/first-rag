@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
 """写入边界门禁：宪法 V 的 NON-NEGOTIABLE 那条。
 
-运行时只准写 data/ 与 notes/；产品源目录（~/.claude、~/.codex、~/.kimi-code、
-~/.trae-cn）**严格只读**。这条约束违规的代价是「把用户真实的会话记录改了」，
-而它恰好是本项目里唯一没有机械门禁的硬约束 —— 全靠人记得。
+运行时只准写 data/ 与 notes/；产品源目录（PRD §6 那张表，v0.7 起 11 个：
+~/.claude、~/.codex、~/.kimi-code、~/.trae-cn、~/.trae、~/.qoder、~/.qoder-cn、
+~/.workbuddy-ai、~/.local/share/opencode、~/.zcode、~/.hermes）**严格只读**。
+这条约束违规的代价是「把用户真实的会话记录改了」，而它恰好是本项目里唯一
+没有机械门禁的硬约束 —— 全靠人记得。
+
+三条规则：
+
+  1. 产品根写入 —— 硬违规，登记也救不了（宪法 V）。
+  2. SQLite 必须按只读 URI 打开 —— 同样是硬违规：`sqlite3.connect(path)`
+     在 AST 里不像写入，却会往源目录里建 -wal/-shm/-journal（NFR-001）。
+  3. src/ 里任何写入点都必须登记过；没登记就是没想过。
 
 静态 AST 扫 src/，绝不执行被测代码（跑一遍 sync 要 .env + Qdrant + 真调 Ark，
 进不了毫秒级提交门禁；而且门禁自己不该有能力写坏东西）。
@@ -99,6 +108,8 @@ def scan(root: Path, registry: dict | None = None) -> list[Problem]:
         sites.update(site for site, _ in found)
         products = _product_violations(rel, found, tree)
         problems.extend(products)
+        # 跟产品根一样是硬法：不并进登记表，也没有"未登记"那条可走。
+        problems.extend(_sqlite_violations(rel, tree))
         # 产品根那条是硬法，登记也不许 —— 同一个点就别再报一次「未登记」，
         # 否则等于给出一条根本不该被采纳的修复建议。
         hard = {p.site for p in products}
@@ -121,6 +132,100 @@ def _stale(sites: set[str], files: set[str], registry: dict) -> list[Problem]:
                     site=site)
             for site in sorted(registry)
             if site not in sites and site.split(":")[0] in files]
+
+
+def _sqlite_connect_aliases(tree: ast.AST) -> tuple[set[str], set[str]]:
+    """本文件里指向 sqlite3.connect 的两种写法：模块名（可带别名）+ 裸 connect 名。
+
+    认 `import sqlite3`、`import sqlite3 as sq`、`from sqlite3 import connect`
+    （可带 as）三种。漏掉任何一种，换个导入写法就整条溜过去了 —— 而换写法
+    不需要任何理由，写插件的人顺手就写了。
+    """
+    modules: set[str] = set()
+    bare: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "sqlite3":
+                    modules.add(alias.asname or "sqlite3")
+        elif isinstance(node, ast.ImportFrom) and node.module == "sqlite3":
+            bare.update(a.asname or a.name
+                        for a in node.names if a.name == "connect")
+    return modules, bare
+
+
+def _is_sqlite_connect(node: ast.Call, modules: set[str],
+                       bare: set[str]) -> bool:
+    """这是不是一次 sqlite3.connect()。只看名字，不猜对象是不是连接池。"""
+    callee = node.func
+    if isinstance(callee, ast.Name):
+        return callee.id in bare
+    if isinstance(callee, ast.Attribute) and callee.attr == "connect":
+        head = callee.value
+        return isinstance(head, ast.Name) and head.id in modules
+    return False
+
+
+def _literal_text(node: ast.expr) -> str | None:
+    """字符串字面量 / f-string 的**静态可读部分**，读不出来则 None。
+
+    f-string 只拼常量段：`f"file:{db}?mode=ro"` 给出 `"file:?mode=ro"`，
+    两个标记都还在。插值进来的变量不参与匹配 —— 那正是我们看不出来、
+    要按最危险算的地方。
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(part.value for part in node.values
+                       if isinstance(part, ast.Constant)
+                       and isinstance(part.value, str))
+    return None
+
+
+def _opens_read_only(node: ast.Call) -> bool:
+    """这个 connect 是不是**确定**按只读 URI 打开的。
+
+    三件事必须同时成立：`uri=True`、路径里读得到 `file:`、以及 `mode=ro`。
+    少任何一样都还留着写的能力，且三种漏法各漏各的：
+
+      - 没 `mode=ro`：`file:` 的默认 mode 是 **rw**；
+      - 没 `uri=True`：那个字符串被当成普通文件名，sqlite3 会在 cwd 下
+        凭空建一个名叫 `file:...?mode=ro` 的库；
+      - 路径读不出字面量（`connect(p)`）：看不懂 —— 跟 `_mode_of` 一个原则，
+        按最危险的算，宁可错报一次让人写清楚。
+    """
+    if not any(kw.arg == "uri" and isinstance(kw.value, ast.Constant)
+               and kw.value.value is True for kw in node.keywords or ()):
+        return False
+    if not node.args:
+        return False
+    literal = _literal_text(node.args[0])
+    return (literal is not None
+            and "file:" in literal and "mode=ro" in literal)
+
+
+def _sqlite_violations(rel: str, tree: ast.AST) -> list[Problem]:
+    """src/ 里每个 sqlite3.connect() 都必须按只读 URI 打开（NFR-001 / AC-017）。
+
+    为什么单独一条规则，而不是并进写入点登记：它 AST 形状上**不像写入** ——
+    没有 mode 参数、不落在 WRITE_METHODS 里、路径也不是 Path.home() 派生的
+    字面量，三条现有规则没一条够得着。但它对源目录做的事和写一样：建
+    -wal/-shm/-journal、退出时改 journal mode（会真的写回库头）。所以这条
+    是硬法，登记救不了，只能改代码。
+    """
+    modules, bare = _sqlite_connect_aliases(tree)
+    if not modules and not bare:
+        return []
+    return [Problem(
+        file=rel, lineno=node.lineno, rule="sqlite-mode",
+        detail="SQLite 源必须按只读打开（NFR-001 / AC-017）。裸 "
+               "sqlite3.connect() 会在源目录里建 -wal/-shm/-journal，并可能"
+               "改回库头 —— 和写文件是同一件事（宪法 V：产品源目录严格只读）。"
+               '改成：sqlite3.connect(f"file:{path}?mode=ro", uri=True)')
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and _is_sqlite_connect(node, modules, bare)
+        and not _opens_read_only(node)]
 
 
 def product_roots(tree: ast.AST) -> set[str]:
@@ -306,8 +411,13 @@ def print_registry() -> None:
         print(f"  {'':<28}    {entry.why}")
         if entry.only_from:
             print(f"  {'':<28}    只许被这些位置调用：{'、'.join(entry.only_from)}")
-    print("\n硬法（登记也不能豁免）：产品源目录 ~/.claude、~/.codex、"
-          "~/.kimi-code、~/.trae-cn 严格只读（宪法 V）")
+    print("\n硬法（登记也不能豁免）：")
+    print("  产品源目录严格只读（宪法 V）——~/.claude、~/.codex、~/.kimi-code、"
+          "~/.trae-cn、~/.trae、")
+    print("    ~/.qoder、~/.qoder-cn、~/.workbuddy-ai、"
+          "~/.local/share/opencode、~/.zcode、~/.hermes（PRD §6，v0.7）")
+    print("  SQLite 源必须 sqlite3.connect(f\"file:{path}?mode=ro\", uri=True)"
+          "（NFR-001）")
 
 
 def _names_bound_to(tree: ast.AST, module: str, func: str,

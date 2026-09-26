@@ -266,6 +266,21 @@ CASES: list[Case] = [
          why="登记表钉的是「写入点在 src/scope.py:save」，光这样挡不住别的模块 "
              "import 这个函数去写 config/ —— 写入点名字都没变，门禁照样绿。"
              "这条用例走的是带 as 别名的导入形状，最容易漏认的一种"),
+    Case("write-boundary", "SQLite 源没按只读打开",
+         {"src/plugins/hermes/__init__.py":
+          '"""Reads a tool\'s SQLite state the obvious way."""\n'
+          "import sqlite3\n"
+          "\n"
+          "\n"
+          "def read_messages(db) -> list:\n"
+          "    con = sqlite3.connect(db)\n"
+          '    return con.execute("SELECT * FROM messages").fetchall()\n'},
+         "red",
+         why="2026-09-25 补的规则（NFR-001）。这条专门防「看起来没问题」："
+             "sqlite3.connect(path) 一个 mode 参数都没有，路径也不是 Path.home() "
+             "派生的字面量，所以产品根那条、登记那条都够不着它 —— 但它会往源目录"
+             "里建 -wal/-shm/-journal。B 族三个插件（opencode/zcode/hermes）全都要"
+             "读 SQLite，这条规则必须在那之前就被证明真的会红（tasks T049/T050）"),
     Case("pytest", "测试挂了",
          {"tests/test_boom.py": BOOM_TEST}, "red",
          "一个必失败的断言；这条挂了等于提交门禁的底座没了"),

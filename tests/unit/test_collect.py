@@ -44,10 +44,74 @@ def test_gather_writes_snapshot_with_distill_meta(dirs, monkeypatch):
     path = collect.snapshot_path(DAY)
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert saved["date"] == "2026-09-18"
-    assert saved["distill_run"] == {"status": "noop"}
+    assert saved["distill_run"] == {"status": "collected"}
     assert saved["materials"][0]["text"] == "hello"
     assert saved["materials"][0]["ts"].endswith("+08:00")
     assert len(day_raw.materials) == 1
+
+
+def test_gather_marks_the_day_as_collected_not_as_a_finished_run(dirs, monkeypatch):
+    """采集落盘时蒸馏还没跑，status 不能写成 `noop`。
+
+    `noop` 是蒸馏**跑完之后**才下的结论（当天确实没素材，见 `distill._finish`）。
+    采集阶段复用同一个值，"跑完了没素材"和"进程半路死了"在快照上就长得一模一样
+    —— 09-24 / 09-26 那两份快照正是这么分不出来的：`{"status": "noop"}` 既可能是
+    蒸馏的正常结论，也可能是一次没跑完的运行留下的残骸，看的人无从判断。
+
+    采集只写 `collected`；model / rubric_hash 这些蒸馏产物一个都不写，因为那会儿
+    它们根本还不存在，写了就是编。
+    """
+    monkeypatch.setattr(collect, "iter_plugins", lambda: [])
+
+    collect.gather(DAY)
+
+    saved = json.loads(collect.snapshot_path(DAY).read_text(encoding="utf-8"))
+    assert saved["distill_run"] == {"status": "collected"}
+
+
+def test_gather_persist_false_collects_but_writes_nothing(dirs, monkeypatch):
+    """T083：只读探针路径 —— 采集照跑、`DayRaw` 照给，但一个字节都不写。
+
+    断言必须落在**盘上**：返回值对不对是另一件事，"没写盘"才是这条路径存在的理由
+    （`data/raw/` 是 `make redistill` 的重放基线，本仓库丢过它，含不可恢复的日期）。
+    """
+    monkeypatch.setattr(collect, "iter_plugins",
+                        lambda: [_fake_plugin(lambda r: RawMaterial(
+                            source="fake", ref="x", ts=datetime(2026, 9, 18, 10, tzinfo=TZ),
+                            kind="message", text="hello", meta={}))])
+
+    day_raw = collect.gather(DAY, persist=False)
+
+    assert not collect.snapshot_path(DAY).exists()
+    assert [m.text for m in day_raw.materials] == ["hello"]
+
+
+def test_gather_persist_false_leaves_an_existing_snapshot_byte_identical(dirs, monkeypatch):
+    """已有快照也不能被动到 —— 探针最危险的形状不是"没写"，是"把好快照写坏"。"""
+    monkeypatch.setattr(collect, "iter_plugins",
+                        lambda: [_fake_plugin(lambda r: RawMaterial(
+                            source="fake", ref="x", ts=datetime(2026, 9, 18, 10, tzinfo=TZ),
+                            kind="message", text="hello", meta={}))])
+    collect.gather(DAY)  # 先正常落一份
+    path = collect.snapshot_path(DAY)
+    before = (path.read_bytes(), path.stat().st_mtime_ns)
+
+    collect.gather(DAY, persist=False)
+
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+
+
+def test_gather_persist_false_and_true_see_the_same_materials(dirs, monkeypatch):
+    """两种模式的返回值必须一致，否则探针量到的不是 sync 会看到的东西。"""
+    monkeypatch.setattr(collect, "iter_plugins",
+                        lambda: [_fake_plugin(lambda r: RawMaterial(
+                            source="fake", ref="x", ts=datetime(2026, 9, 18, 10, tzinfo=TZ),
+                            kind="message", text="hello", meta={}))])
+
+    probed = collect.gather(DAY, persist=False)
+    persisted = collect.gather(DAY)
+
+    assert [m.text for m in probed.materials] == [m.text for m in persisted.materials]
 
 
 def test_broken_plugin_is_noop_not_fatal(dirs, monkeypatch, caplog):
@@ -62,8 +126,9 @@ def test_broken_plugin_is_noop_not_fatal(dirs, monkeypatch, caplog):
     assert any("bad" in r.message for r in caplog.records)
 
 
-def test_git_missing_repos_file_is_noop(dirs):
+def test_git_missing_repos_file_is_noop(dirs, monkeypatch):
     # no repos.txt at all — gather still succeeds
+    monkeypatch.setattr(collect, "iter_plugins", lambda: [])  # 本用例只测 repos 缺失，不碰真实源
     day_raw = collect.gather(DAY)
     assert all(m.source != "git" for m in day_raw.materials)
 
@@ -520,3 +585,219 @@ def test_snapshot_top_level_keys_are_the_schema(dirs, monkeypatch):
 
     saved = json.loads(collect.snapshot_path(DAY).read_text(encoding="utf-8"))
     assert set(saved) == {"date", "collected_at", "distill_run", "materials"}
+
+
+# --- 快照写保护：覆盖是无声的，削减必须是有意的 ---
+#
+# 2026-09-26 真踩过：验证"每个新源在有数据的日期单独跑"时，每源一次 `gather`
+# 都带着**只勾了那一个源**的 scope，于是同一天的多来源快照被 1 条素材的单来源
+# 快照**覆盖**。Qdrant 没事（条目是 upsert 的），但 `data/raw/` 是 `make
+# redistill` 的重放基线 —— 之后对那些日期做 diff，比的是"1 条素材的日"和
+# "库里 27 点"，**不会报错，只会给出一个错的 diff**。
+
+def _snapshot_with(dirs, count: int, day=DAY) -> None:
+    """直接落一份 count 条素材的快照，绕过 gather（这些用例只测写保护）。"""
+    day_raw = collect.DayRaw(day=day, collected_at=datetime.now(TZ))
+    day_raw.materials = [
+        RawMaterial(source="fake", ref=f"r{i}", ts=datetime.now(TZ),
+                    kind="message", text=f"t{i}") for i in range(count)]
+    collect.save_snapshot(day_raw)
+
+
+def test_save_snapshot_refuses_to_shrink_an_existing_snapshot(dirs):
+    _snapshot_with(dirs, 8)
+
+    with pytest.raises(collect.SnapshotShrinkError, match="8"):
+        _snapshot_with(dirs, 1)
+
+
+def test_a_refused_shrink_leaves_the_old_snapshot_intact(dirs):
+    """拒写必须发生在写之前 —— 拦下了却已经覆盖，等于没拦。"""
+    _snapshot_with(dirs, 8)
+
+    with pytest.raises(collect.SnapshotShrinkError):
+        _snapshot_with(dirs, 1)
+
+    saved = json.loads(collect.snapshot_path(DAY).read_text(encoding="utf-8"))
+    assert len(saved["materials"]) == 8
+
+
+def test_save_snapshot_allows_shrink_when_explicitly_asked(dirs):
+    """故意换更窄的 scope 重跑是合法操作，所以留了明路。"""
+    _snapshot_with(dirs, 8)
+
+    day_raw = collect.DayRaw(day=DAY, collected_at=datetime.now(TZ))
+    day_raw.materials = []
+    collect.save_snapshot(day_raw, allow_shrink=True)
+
+    saved = json.loads(collect.snapshot_path(DAY).read_text(encoding="utf-8"))
+    assert saved["materials"] == []
+
+
+def test_save_snapshot_writes_when_nothing_is_there_yet(dirs):
+    _snapshot_with(dirs, 3)
+
+    saved = json.loads(collect.snapshot_path(DAY).read_text(encoding="utf-8"))
+    assert len(saved["materials"]) == 3
+
+
+def test_save_snapshot_allows_growth_and_same_count(dirs):
+    """蒸馏会把 distill_run 写回去，素材数不变 —— 那条路不能被拦。"""
+    _snapshot_with(dirs, 2)
+    _snapshot_with(dirs, 2)
+    _snapshot_with(dirs, 3)
+
+    saved = json.loads(collect.snapshot_path(DAY).read_text(encoding="utf-8"))
+    assert len(saved["materials"]) == 3
+
+
+def _snapshot_of_sources(dirs, sources: list[str], day=DAY) -> None:
+    """按来源列表落一份快照：每个来源一条素材，于是"条数"与"来源"可以分开摆布。"""
+    day_raw = collect.DayRaw(day=day, collected_at=datetime.now(TZ))
+    day_raw.materials = [
+        RawMaterial(source=s, ref=f"r{i}", ts=datetime.now(TZ),
+                    kind="message", text=f"t{i}") for i, s in enumerate(sources)]
+    collect.save_snapshot(day_raw)
+
+
+def test_save_snapshot_refuses_when_a_source_disappears_at_same_count(dirs):
+    """条数相同、来源换人 —— 覆盖同样是无声的。
+
+    `data/raw/` 的重放基线按 (source, ref) 逐条比。10 条 claude_code 换成
+    10 条 trae，条数守卫看着毫无异常，而被盖掉的正是唯一那份证据。
+    """
+    _snapshot_of_sources(dirs, ["claude_code"])
+
+    with pytest.raises(collect.SnapshotShrinkError, match="claude_code"):
+        _snapshot_of_sources(dirs, ["trae"])
+
+
+def test_save_snapshot_allows_same_sources_in_a_different_order(dirs):
+    """来源集合是按集合比的 —— 顺序变了不是削减。"""
+    _snapshot_of_sources(dirs, ["claude_code", "trae"])
+    _snapshot_of_sources(dirs, ["trae", "claude_code"])
+
+    saved = json.loads(collect.snapshot_path(DAY).read_text(encoding="utf-8"))
+    assert len(saved["materials"]) == 2
+
+
+def test_save_snapshot_allows_new_sources_to_appear(dirs):
+    """来源只增不减是增长，不是削减 —— 守卫不能拦成"来源集合必须不变"。"""
+    _snapshot_of_sources(dirs, ["claude_code", "trae"])
+    _snapshot_of_sources(dirs, ["claude_code", "trae", "opencode"])
+
+    saved = json.loads(collect.snapshot_path(DAY).read_text(encoding="utf-8"))
+    assert len(saved["materials"]) == 3
+
+
+def test_source_error_names_every_missing_source(dirs):
+    """错误信息是唯一的说明书：得点名是谁没了，否则人只会去删文件。
+
+    刻意做成 2 → 2：条数守卫在这里是哑的，能把这条用例拦下来的只可能是来源分支。
+    """
+    _snapshot_of_sources(dirs, ["claude_code", "trae"])
+
+    with pytest.raises(collect.SnapshotShrinkError, match="trae"):
+        _snapshot_of_sources(dirs, ["claude_code", "opencode"])
+
+
+def test_a_refused_source_removal_leaves_the_old_snapshot_intact(dirs):
+    """同 `test_a_refused_shrink_leaves_the_old_snapshot_intact`：拒写必须在写之前。
+
+    2 → 2，所以拦下它的不是条数守卫；覆盖一旦发生，条数还看不出异常。
+    """
+    _snapshot_of_sources(dirs, ["claude_code", "trae"])
+
+    with pytest.raises(collect.SnapshotShrinkError):
+        _snapshot_of_sources(dirs, ["claude_code", "opencode"])
+
+    saved = json.loads(collect.snapshot_path(DAY).read_text(encoding="utf-8"))
+    assert {m["source"] for m in saved["materials"]} == {"claude_code", "trae"}
+
+
+def test_an_unreadable_snapshot_is_never_overwritten(dirs):
+    """解析不了就无从判断会不会削减 —— 宁可停下，也不许静默盖掉。"""
+    path = collect.snapshot_path(DAY)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{ not json", encoding="utf-8")
+
+    with pytest.raises(collect.SnapshotShrinkError, match="cannot be read"):
+        _snapshot_of_sources(dirs, ["claude_code"])
+
+    assert path.read_text(encoding="utf-8") == "{ not json"
+
+
+def test_a_snapshot_without_a_materials_list_is_refused(dirs):
+    """**解析得出 ≠ 读得懂**：结构不对的快照同样不许覆盖。
+
+    只认"JSON 解析失败"是不够的——`{"materials": null}` 解析得好好的，
+    若把它读成"盘上 0 条"，守卫就会对着一个坏文件放行。而源集合判据要的
+    正是从这里读出来的 sources，洞就开在守卫以为自己正防着的那一侧。
+    """
+    path = collect.snapshot_path(DAY)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"date": "2026-09-18"}', encoding="utf-8")
+
+    with pytest.raises(collect.SnapshotShrinkError, match="materials"):
+        _snapshot_of_sources(dirs, ["claude_code"])
+
+    assert path.read_text(encoding="utf-8") == '{"date": "2026-09-18"}'
+
+
+def test_a_snapshot_whose_materials_is_not_a_list_is_refused(dirs):
+    """`null` 是最像"空"的一种坏——它必须是坏，不是空。"""
+    path = collect.snapshot_path(DAY)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"materials": null}', encoding="utf-8")
+
+    with pytest.raises(collect.SnapshotShrinkError, match="materials"):
+        _snapshot_of_sources(dirs, ["claude_code"])
+
+
+@pytest.mark.parametrize("entry", ['"oops"', '{"ref": "no-source"}', '{"source": 7}'])
+def test_a_snapshot_with_a_malformed_material_is_refused(dirs, entry):
+    """条目本身读不出 source，就等于读不出"盘上有哪些来源" —— 一样拒写。"""
+    path = collect.snapshot_path(DAY)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'{{"materials": [{{"source": "claude_code"}}, {entry}]}}',
+                    encoding="utf-8")
+
+    with pytest.raises(collect.SnapshotShrinkError, match="material #1"):
+        _snapshot_of_sources(dirs, ["claude_code"])
+
+
+def test_a_well_formed_snapshot_is_still_readable(dirs):
+    """收紧不能把正常路径一起关掉 —— 这条是上三条的对照。"""
+    _snapshot_of_sources(dirs, ["claude_code", "trae"])
+    _snapshot_of_sources(dirs, ["claude_code", "trae"])
+
+    saved = json.loads(collect.snapshot_path(DAY).read_text(encoding="utf-8"))
+    assert len(saved["materials"]) == 2
+
+
+def test_shrink_error_says_how_to_override(dirs):
+    """错误信息是唯一的说明书：只说"不行"会让人去删文件，而删文件更糟。"""
+    _snapshot_with(dirs, 8)
+
+    with pytest.raises(collect.SnapshotShrinkError, match="allow_shrink"):
+        _snapshot_with(dirs, 1)
+
+
+def test_shrink_error_quotes_both_counts(dirs):
+    """8 → 1 和 8 → 7 是两种不同的判断依据，信息里要能看出来。"""
+    _snapshot_with(dirs, 8)
+
+    with pytest.raises(collect.SnapshotShrinkError, match="8.*1|1.*8"):
+        _snapshot_with(dirs, 1)
+
+
+def test_gather_passes_allow_shrink_through(dirs, monkeypatch):
+    """`gather` 是唯一会合法削减素材数的地方（scope + `_cap`），
+    所以它得能把这个开关传下去；否则 CLI 的明路是断的。"""
+    monkeypatch.setattr(collect, "iter_plugins", lambda: [])
+    _snapshot_with(dirs, 5)
+
+    day_raw = collect.gather(DAY, allow_shrink=True)
+
+    saved = json.loads(collect.snapshot_path(DAY).read_text(encoding="utf-8"))
+    assert len(saved["materials"]) == len(day_raw.materials) == 0

@@ -104,9 +104,13 @@ pytest_add_cli_args = ["-x", "-q", "--no-header", "-p", "no:cacheprovider"]
 # 2026-09-24 第三次踩，还是我自己：test_path_literals 要核对 PRD.md 里的文件名，
 # 而 PRD.md 没进这份名单 → make mutation 在收集 stats 阶段就 FileNotFoundError
 # 崩掉，报的还是"runner returned 1"这种看不出根因的错。
+# 2026-09-26 第四次：同一个 test_makefile_forwarding 里新加的那条读 README 的
+# 用例，而名单上只有 Makefile —— 规则下一行说的就是这件事：**读哪个文件，
+# 就登记哪个文件**。注释里写着"同理"不会替你登记。
 # 现在的兜底做法：改完任何读仓库根文件的测试，跑一次
 # `grep -rn 'REPO_ROOT / ' tests/` 对照这份名单，缺一行就补一行。
-also_copy = ["config/", "scripts/", ".pre-commit-config.yaml", "Makefile", "PRD.md"]
+also_copy = ["config/", "scripts/", ".pre-commit-config.yaml", "Makefile", "PRD.md",
+             "README.md"]
 do_not_mutate = ["src/plugins/_template/*"]
 # 按源码行排除，两类：
 # 1. 纯文案行 —— 拼给 LLM 的 JSON 字段名、示例文本、日志格式串。改这些不会

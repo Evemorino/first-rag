@@ -19,6 +19,8 @@ uv run python -m src.ask Q="…" --stream                  # = make ask --stream
 uv run python -m src.scope                   # = make scope
 uv run python -m src.redistill D=2026-09-18 [--apply]    # = make redistill
 uv run python scripts/embed_test.py          # = make embed-test
+uv run python scripts/rerun_overlap_report.py [--day 2026-09-24]  # = make rerun-overlap（只读）
+uv run python scripts/collect_probe.py --day 2026-09-25 [--source qoder]  # = make probe（只读，不写盘）
 uv run uvicorn src.api.app:app --port 8300   # = make serve
 ```
 
@@ -30,8 +32,9 @@ make embed-test    # 首次：真调 Ark 验证嵌入模型与维度，建集合
 make sync          # 当日采集→蒸馏→入库（幂等，可重复跑）
 make sync D=2026-09-18   # 补跑历史日期（AC-009）
 make log m="想法" t=idea  # 手动快记 → notes/inbox.md
-make ask Q="最近学了什么" --type error --since 7d   # 检索问答
-make ask Q="最近学了什么" --stream                 # 流式问答（边生成边打；首字 ~0.7s）
+make ask Q="最近学了什么" ARGS="--type error --since 7d"   # 检索问答（额外参数必须走 ARGS=）
+make ask Q="最近学了什么" ARGS=--stream                    # 流式问答（边生成边打；首字 ~0.7s）
+make probe D=2026-09-25 S=qoder  # 只读采集探针：逐源素材数，不写任何文件
 make scope         # 交互式选择采集范围（写 config/scope.json）
 make redistill D=2026-09-18        # 重蒸馏对照（只看 diff）
 make redistill D=2026-09-18 APPLY=1  # 确认后整组替换
@@ -49,6 +52,7 @@ make baseline      # 只核对不重跑：README 里的分数还准不准 + 哪�
 make recheck       # 分族统计存活变异体（mutmut 之外的另一个 oracle；--run 才改源码）
 make hooks         # 装 pre-commit：每次 commit 自动跑 15 个钩子（CI 上还有一层）
 make gate-selftest # 门禁自检：给每个钩子植入违规，看它到底红不红（约 10 秒）
+make rerun-overlap [D=2026-09-24] [ARGS="--threshold 0.80"]  # 只读：同日重跑重叠度（FR-007 待澄清项的实测）
 ```
 
 ## 目录速查
@@ -73,7 +77,10 @@ src/
   sync.py          # 串联主链路 + .sync.lock + retention 清理
   redistill.py     # 重蒸馏对照编排（diff 先行，确认后替换）
   log.py / scope.py# 快记与范围选择入口
-  plugins/         # 采集插件：claude_code / codex / kimi_code / trae / _template
+  plugins/         # 11 个采集插件 + _template（清单与产品目录见 README「支持的数据源」）
+                   # JSONL 族：claude_code / codex / kimi_code / qoder / qoder_cn /
+                   #           workbuddy_ai / trae / trae_work_cn
+                   # SQLite 族：opencode / zcode / hermes（一律 mode=ro，见 README 隐私节）
   api/app.py       # FastAPI 薄壳（路由只做校验与调用）
 scripts/crap.py    # CRAP 计算器：radon 复杂度 × coverage 覆盖率
 scripts/orphan_check.py  # 孤儿模块：找出零覆盖的 src/ 模块（CRAP 抓不到）
@@ -85,6 +92,7 @@ scripts/mutation_selfcheck.py  # 变异自检 canary（改坏源码看测试红�
 scripts/mutant_recheck.py      # 把存活变异体手工打进源码重跑测试：分族 + 逐条判决（mutmut 之外的另一个 oracle）
 scripts/baseline_check.py      # 文档基线核对：mutants/ 真实结果 vs README 写死的数字
 scripts/gate_selftest.py       # 门禁自检：给 15 个钩子各植入一个违规，断言它真会红
+scripts/rerun_overlap_report.py # 同日重跑重叠度（只读 Qdrant）：NN 分布 vs novelty_threshold
 tests/mutmut_compat.py  # mutmut 3.x 对 `src.` 包名的兼容补丁（见文件头）
 config/            # schema.json（类型/rubric/检索/trae 映射/保留期）、repos.txt（git 采集仓库清单，
                    # 一行一个绝对路径；`~` 不展开）；scope.json 只在人跑过 `make scope` 后才存在
@@ -97,7 +105,10 @@ specs/001-learning-memory-rag/  # spec/plan/data-model/contracts/tasks
 ## 硬约束（违者即错，出处见宪法）
 
 - **写入边界（NON-NEGOTIABLE）**：运行时只写 `data/`、`notes/`；临时产物用系统 tmp；
-  产品源目录（`~/.claude`、`~/.codex`、`~/.kimi-code`、`~/.trae-cn`）严格只读。
+  11 个产品源目录（清单见 README「支持的数据源」）严格只读。SQLite 三个源另有
+  硬性要求：必须 `sqlite3.connect(f"file:{path}?mode=ro", uri=True)`，普通连接会
+  在源目录落 `-wal`/`-shm` —— 那就是写入；凭据按路径与表（各有 `ALLOWED_TABLES`）
+  双向排除，**不整库遍历**。
   由 `scripts/write_boundary_check.py` 守：产品根写入是硬法（登记也豁免不了），
   而 `src/` 里**每个**写入点都必须在 `WRITE_SITES` 里登记「允许写到哪 + 为什么」，
   兜底同样是拒绝。唯一的枚举例外是 `config/scope.json`（宪法 v2.1.0 写死：只此

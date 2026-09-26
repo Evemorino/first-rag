@@ -25,11 +25,17 @@ BASELINE_SENTENCE = (
 
 
 def make_mutants(tmp_path, per_file):
-    """按 {文件名: [exit_code, ...]} 造一个 mutants/src/。"""
+    """按 {文件名: [exit_code, ...]} 造一个 mutants/src/。
+
+    名字用真实形状 `<模块>.<函数>__mutmut_N`（一个文件算一个函数）：占位名
+    （k0 / k1）在真实数据里不存在，而按函数分组、以及"认不出名字就报错"那条
+    检查都靠这个名字，夹具用占位名等于把被测的东西绕过去了。
+    """
     mutants = tmp_path / "mutants"
     (mutants / "src").mkdir(parents=True)
     for name, codes in per_file.items():
-        payload = {"exit_code_by_key": {f"k{i}": c for i, c in enumerate(codes)}}
+        payload = {"exit_code_by_key": {
+            f"{name}.x_func__mutmut_{i}": c for i, c in enumerate(codes)}}
         (mutants / "src" / f"{name}.py.meta").write_text(json.dumps(payload))
     return mutants
 
@@ -158,3 +164,125 @@ def test_update_refuses_ambiguous_doc(tmp_path):
     with pytest.raises(SystemExit) as excinfo:
         baseline_check.update_doc(baseline_check.Counts(1, 1, 1), doc)
     assert str(excinfo.value) == "在 {} 里找到 2 处基线，期望恰好 1 处，未改动".format(doc)
+
+
+# --- 「整个函数没有测试映射」的登记表 ---
+# 这一条查的不是分数，是"变异体压根没被判过"这件事。见 KNOWN_NO_TESTS 上方。
+
+
+def make_named_mutants(tmp_path, per_file):
+    """按 {文件名: {变异体名: 退出码}} 造 mutants/src/。
+
+    名字必须保持真实形状（`<模块>.<函数>__mutmut_N`）：分组靠的就是这个名字前缀，
+    用上面 make_mutants 那种 k0/k1 占位名测不出任何东西。
+    """
+    mutants = tmp_path / "mutants"
+    (mutants / "src").mkdir(parents=True, exist_ok=True)
+    for name, codes in per_file.items():
+        (mutants / "src" / f"{name}.py.meta").write_text(json.dumps({"exit_code_by_key": codes}))
+    return mutants
+
+
+def test_no_tests_only_function_is_flagged(tmp_path):
+    """一个函数的变异体全判 no tests → 报出来（2026-09-26 那 13 条的现场）。"""
+    mutants = make_named_mutants(tmp_path, {"ingest": {
+        "ingest.x__skipped_by_source__mutmut_1": 33,
+        "ingest.x__skipped_by_source__mutmut_2": 5,
+        "ingest.x_upsert__mutmut_1": 1,
+    }})
+    assert baseline_check.no_tests_only_functions(mutants) == {"ingest.x__skipped_by_source": 2}
+    assert baseline_check.unregistered_no_tests(mutants) == {"ingest.x__skipped_by_source": 2}
+
+
+def test_registered_no_tests_functions_pass(tmp_path):
+    """登记过的（真没测试覆盖的工厂）不算问题 —— 兜底是"报出来"，登记才放行。"""
+    mutants = make_named_mutants(tmp_path, {"ingest": {"ingest.x__client__mutmut_1": 33}})
+    assert baseline_check.no_tests_only_functions(mutants) == {"ingest.x__client": 1}
+    assert baseline_check.unregistered_no_tests(mutants) == {}
+
+
+def test_partly_judged_function_is_not_flagged(tmp_path):
+    """函数里只要有任意一条被判定过，映射就是通的；剩下的 no tests 是"分支没走到"。"""
+    mutants = make_named_mutants(tmp_path, {"sync": {
+        "sync.x_main__mutmut_1": 1,
+        "sync.x_main__mutmut_2": 33,
+    }})
+    assert baseline_check.no_tests_only_functions(mutants) == {}
+
+
+def test_functions_are_grouped_separately(tmp_path):
+    """按 `<模块>.<函数>` 分组，不把同一个模块里的几条混成一个。"""
+    mutants = make_named_mutants(tmp_path, {"ids": {
+        "ids.x_content_hash__mutmut_1": 33,
+        "ids.x_point_id__mutmut_1": 33,
+    }})
+    assert baseline_check.no_tests_only_functions(mutants) == {
+        "ids.x_content_hash": 1, "ids.x_point_id": 1}
+
+
+def test_main_fails_on_unregistered_no_tests(tmp_path, capsys):
+    """文档数字对得上也要红 —— 这条管的不是数字，是映射。"""
+    doc = make_doc(tmp_path, "1 个变异体被杀死、0 个存活、1 个无测试覆盖，**变异分数 100.0%**")
+    mutants = make_named_mutants(tmp_path, {"ingest": {
+        "ingest.x_upsert__mutmut_1": 1,
+        "ingest.x__skipped_by_source__mutmut_1": 33,
+    }})
+
+    assert baseline_check.main(["--doc", str(doc), "--mutants", str(mutants)]) == 1
+    out = capsys.readouterr().out
+    assert "ingest.x__skipped_by_source（1 条）" in out
+    assert "mutmut-stats.json" in out      # 修法必须写在报错里，否则等于只报不教
+    assert "✓ 基线一致" in out              # 数字本身是对的，红的不是它
+
+
+def test_update_refuses_while_mapping_is_unregistered(tmp_path, capsys):
+    """映射没判完就不该写数字：写出去会让人以为那些变异体已经判过了。"""
+    doc = make_doc(tmp_path, "1 个变异体被杀死、0 个存活、1 个无测试覆盖，**变异分数 100.0%**")
+    mutants = make_named_mutants(tmp_path, {"ingest": {
+        "ingest.x_upsert__mutmut_1": 0,
+        "ingest.x__skipped_by_source__mutmut_1": 33,
+    }})
+
+    assert baseline_check.main(
+        ["--doc", str(doc), "--mutants", str(mutants), "--update"]) == 1
+    assert "数字先不写" in capsys.readouterr().out
+    assert "100.0%" in doc.read_text(encoding="utf-8")   # 文档原样没动
+
+
+def test_update_writes_once_mapping_is_clean(tmp_path):
+    """映射干净时 --update 照旧写回（别把正常路径也堵死）。"""
+    doc = make_doc(tmp_path, "1 个变异体被杀死、0 个存活、1 个无测试覆盖，**变异分数 100.0%**")
+    mutants = make_named_mutants(tmp_path, {"ingest": {"ingest.x_upsert__mutmut_1": 1}})
+    assert baseline_check.main(["--doc", str(doc), "--mutants", str(mutants), "--update"]) == 0
+    assert "变异分数 100.0%" in doc.read_text(encoding="utf-8")
+
+
+def test_unrecognised_mutant_names_are_counted(tmp_path):
+    """名字认不出来要能数出来：分组会全空，这条检查就静默瞎了。"""
+    mutants = make_named_mutants(tmp_path, {"ids": {
+        "k0": 33,
+        "ids.x__cap__mutmut_1": 1,
+    }})
+    assert baseline_check.unrecognised_mutants(mutants) == 1
+    assert baseline_check.no_tests_only_functions(mutants) == {}
+
+
+def test_main_fails_when_mutant_names_are_unrecognisable(tmp_path, capsys):
+    """认不出名字时要红 —— 门禁最坏的死法是一直绿着，而不是报错。"""
+    doc = make_doc(tmp_path, "1 个变异体被杀死、0 个存活、0 个无测试覆盖，**变异分数 100.0%**")
+    mutants = make_named_mutants(tmp_path, {"ids": {"k0": 1}})
+
+    assert baseline_check.main(["--doc", str(doc), "--mutants", str(mutants)]) == 1
+    out = capsys.readouterr().out
+    assert "_MUTANT_SUFFIX_RE" in out      # 报错里得写清该改哪儿
+    assert "✓ 基线一致" in out              # 数字是对的，红的不是数字
+
+
+def test_update_refuses_when_names_are_unrecognisable(tmp_path, capsys):
+    """分组瞎了就不写数字：那份数字根本没被核对过。"""
+    doc = make_doc(tmp_path, "1 个变异体被杀死、0 个存活、0 个无测试覆盖，**变异分数 100.0%**")
+    mutants = make_named_mutants(tmp_path, {"ids": {"x_mutmut_1": 1}})
+
+    assert baseline_check.main(
+        ["--doc", str(doc), "--mutants", str(mutants), "--update"]) == 1
+    assert "分组都瞎了" in capsys.readouterr().out

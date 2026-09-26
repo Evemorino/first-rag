@@ -1,6 +1,6 @@
 """T024/T025 integration: 四源混跑 + 素材目录消失韧性。
 
-四源 = claude_code / codex / kimi_code / trae（+ git + manual 共六种
+四源 = claude_code / codex / kimi_code / trae_work_cn（+ git + manual 共六种
 source）。Qdrant 用 qdrant-client 内嵌模式（:memory:）——与服务器模式
 走完全相同的 upsert/query 代码路径；真实服务器验证由
 test_ingest_qdrant.py（make up 后自动启用）承担。所有 fixture 写入
@@ -17,7 +17,19 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 
 from src import collect, config, distill, ingest, sync
-from src.plugins import claude_code, codex, kimi_code, trae
+from src.plugins import (
+    claude_code,
+    codex,
+    hermes,
+    kimi_code,
+    opencode,
+    qoder,
+    qoder_cn,
+    trae,
+    trae_work_cn,
+    workbuddy_ai,
+    zcode,
+)
 
 DAY = date(2026, 9, 18)
 TEST_COLLECTION = "learning_memory_test_t024"
@@ -65,8 +77,8 @@ def four_sources(tmp_path, tmp_data_dir, monkeypatch):
                     "content": "kimi: parse the wire format"}) + "\n",
         encoding="utf-8")
 
-    # --- trae: one pre-summarized record ---
-    trae_dir = tmp_path / "trae" / "projects" / "-c-Code-firstrag--p2-abc" / "20260918"
+    # --- trae_work_cn: one pre-summarized record ---
+    trae_dir = tmp_path / "trae_work_cn" / "projects" / "-c-Code-firstrag--p2-abc" / "20260918"
     trae_dir.mkdir(parents=True)
     (trae_dir / "session_memory_x.jsonl").write_text(json.dumps({
         "intent": "import dicom", "actions": ["a"],
@@ -105,7 +117,18 @@ def four_sources(tmp_path, tmp_data_dir, monkeypatch):
     monkeypatch.setattr(claude_code, "SESSIONS_DIR", claude_dir)
     monkeypatch.setattr(codex, "SESSIONS_DIR", tmp_path / "codex")
     monkeypatch.setattr(kimi_code, "SESSIONS_DIR", tmp_path / "kimi")
+    monkeypatch.setattr(trae_work_cn, "MEMORY_DIR", tmp_path / "trae_work_cn")
+    # 其余插件全部指到 tmp：指漏了就会去读开发机真实的家目录，测试随之变得
+    # 不可复现。这不是假想——qoder 与 zcode 在 2026-09-18 当天都有真实会话，
+    # 漏掉任一条都会让下面断言的材料数悄悄 +1。
+    # v0.7 的 11 个源到 T058 为止已全部纳入隔离面；以后新增源必须同时加到这里。
+    monkeypatch.setattr(qoder, "PROJECTS_DIR", tmp_path / "qoder")
+    monkeypatch.setattr(qoder_cn, "PROJECTS_DIR", tmp_path / "qoder_cn")
+    monkeypatch.setattr(workbuddy_ai, "SESSIONS_DIR", tmp_path / "workbuddy_ai")
     monkeypatch.setattr(trae, "MEMORY_DIR", tmp_path / "trae")
+    monkeypatch.setattr(opencode, "DB_PATH", tmp_path / "opencode.db")
+    monkeypatch.setattr(zcode, "DB_PATH", tmp_path / "zcode.sqlite")
+    monkeypatch.setattr(hermes, "DB_PATH", tmp_path / "hermes-state.db")
     return tmp_path
 
 
@@ -175,7 +198,7 @@ def test_four_sources_end_to_end(four_sources, pipeline_fakes, monkeypatch):
 
     assert summary["upserted"] == 6
     assert _payload_sources(pipeline_fakes) == {
-        "claude_code", "codex", "kimi_code", "trae", "git", "manual",
+        "claude_code", "codex", "kimi_code", "trae_work_cn", "git", "manual",
     }
 
     # 同日重跑幂等：points 数不变（AC-003 关联面之外的直插面）
