@@ -233,6 +233,7 @@ def test_upsert_skips_novelty_duplicate(fake_embed, monkeypatch):
     report = ingest.upsert([entry])
 
     assert report.upserted == 0
+    assert report.skipped_by_source == {"claude_code": 1}
     assert client.calls == []
 
 

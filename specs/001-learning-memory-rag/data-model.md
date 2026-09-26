@@ -29,7 +29,8 @@
   "date": "2026-09-18",
   "collected_at": "2026-09-18T22:37:00+08:00",
   "distill_run": {
-    "model": "…", "rubric_hash": "…", "status": "ok|failed|noop"
+    "model": "…", "rubric_hash": "…", "status": "collected|ok|failed|noop",
+    "per_source": {"claude_code": {"materials": 2, "kept": 1}}
   },
   "materials": [
     {"source": "claude_code", "ref": "…", "ts": "…",
@@ -38,6 +39,21 @@
   ]
 }
 ```
+
+`distill_run` 是两个阶段的交界，`status` 因此分两类值：
+
+- **`collected`** —— 采集刚落盘时的出生态，**只有这一个键**（`model` / `rubric_hash`
+  此刻还不存在，写了就是编）。它的含义是"采完了，蒸馏还没收尾"。
+- **`ok` / `failed` / `noop`** —— 蒸馏的终态，由 `distill._finish` 写全四个键
+  （`model` / `rubric_hash` / `status` / `per_source`）。其中 `noop` 特指"当天确实没素材"。
+
+`per_source`（2026-09-26 随 AC-015 加，v0.7.9）逐源记「采到几个 / 蒸馏后剩几个」，
+素材数 >0 而 `kept=0` 时必须能从它判出这个源**有素材却没产出**（此前与"根本没素材"
+在快照上分不开，`qoder` 现场就卡在这）。它只覆盖**蒸馏侧**：入库侧被新颖度拦下的
+条目不在快照里（快照写在 `ingest` 之前），由 `sync` 汇总的 `skipped_by_source` 给出。
+
+两者必须不同值：若采集阶段复用 `noop`，快照就分不出"跑完了、当天没素材"与
+"进程在采集之后、收尾之前死了"（09-24 / 09-26 两份快照正是如此）。
 
 ## config/schema.json
 

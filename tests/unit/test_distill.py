@@ -601,10 +601,60 @@ def test_empty_day_records_the_noop_run(isolated_config):
     distill.distill(make_day_raw([]))
 
     run = load_snapshot(date(2026, 9, 20))["distill_run"]
-    assert set(run) == {"model", "rubric_hash", "status"}
+    assert set(run) == {"model", "rubric_hash", "status", "per_source"}
     assert run["model"] == "none"
     assert run["status"] == "noop"
+    assert run["per_source"] == {}  # 没素材就没有可点的源
     assert re.fullmatch(r"[0-9a-f]{64}", run["rubric_hash"])
+
+
+def test_distill_replaces_the_collected_marker_with_a_final_status(isolated_config):
+    """`collected` 是采集阶段的临时态，蒸馏一收尾就必须被终态顶掉。
+
+    这条与上面那条合起来才是完整的语义：`noop`（跑完了、没素材）与 `collected`
+    （采完了、还没蒸馏完）必须是两个不同的值，否则"进程半路死了"会冒充"跑完了"
+    —— 09-24 / 09-26 两份快照正是这么分不出来的。
+
+    用一条快记走直并入通道，不碰 LLM。
+    """
+    day_raw = make_day_raw([
+        make_material("一条快记", kind="note", source="manual",
+                      ref="inbox.md", meta={"note_type": "idea"}),
+    ])
+    assert day_raw.distill_run == {"status": "collected"}  # 采集产物的出生态
+
+    distill.distill(day_raw)
+
+    run = load_snapshot(date(2026, 9, 20))["distill_run"]
+    assert run["status"] == "ok"
+    # 终态是完整的四个键（per_source 是 AC-015 的判据，2026-09-26 加）
+    assert set(run) == {"model", "rubric_hash", "status", "per_source"}
+    assert run["per_source"] == {"manual": {"materials": 1, "kept": 1}}
+
+
+def test_per_source_counts_separate_a_source_that_produced_nothing(
+    isolated_config, monkeypatch
+):
+    """AC-015：某源「有素材却一条没产出」必须与「根本没素材」在快照里分得开。
+
+    这里两个源：`manual` 走直并入（kept=1），`claude_code` 走 LLM 且那一次返回空
+    entries（kept=0）。没有 per_source 时，快照只说「这天有素材、最终进了 1 条」，
+    分不出第二个源是被低价值丢掉、还是采集/入库坏了 —— `qoder` 那种现场就卡在这。
+    """
+    monkeypatch.setattr(
+        distill, "chat", lambda *args, **kwargs: json.dumps({"entries": []})
+    )
+    day_raw = make_day_raw([
+        make_material("一条快记", kind="note", source="manual",
+                      ref="inbox.md", meta={"note_type": "idea"}),
+        make_material("一段会话", source="claude_code", ref="session-b"),
+    ])
+
+    distill.distill(day_raw)
+
+    per_source = load_snapshot(date(2026, 9, 20))["distill_run"]["per_source"]
+    assert per_source["manual"] == {"materials": 1, "kept": 1}
+    assert per_source["claude_code"] == {"materials": 1, "kept": 0}
 
 
 def test_direct_only_day_records_the_direct_model(isolated_config):

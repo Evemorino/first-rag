@@ -48,17 +48,27 @@ def pipeline(tmp_data_dir, monkeypatch):
     return calls
 
 
-def make_entry(day: date) -> Entry:
+def make_entry(day: date, source: str = "claude_code") -> Entry:
     return Entry(
         text="distilled lesson",
         date=day.isoformat(),
         type="progress",
         tags=["t"],
-        source="claude_code",
+        source=source,
         project=None,
         created_at=datetime(2026, 9, 20, 12, 0, 0),
         source_refs=["s1"],
         distill_version="test+rubric@abcd1234",
+    )
+
+
+def make_material(source: str, ref: str = "s1") -> RawMaterial:
+    return RawMaterial(
+        source=source,
+        ref=ref,
+        ts=datetime(2026, 9, 20, 10, 0, 0),
+        kind="message",
+        text="hello",
     )
 
 
@@ -76,6 +86,9 @@ def test_run_chains_gather_distill_ingest_in_order(pipeline):
         "entries": 1,
         "upserted": 1,
         "raw_removed": 0,
+        "materials_by_source": {"claude_code": 1},
+        "entries_by_source": {"claude_code": 1},
+        "skipped_by_source": {},
     }
 
 
@@ -85,6 +98,74 @@ def test_run_defaults_to_today(pipeline):
     sync.run(None)
     today = datetime.now(tz=cfg.TZ).date()
     assert pipeline[0][1] == today
+
+
+# --- 按源记账（断链排查补的）---
+#
+# 光有总数看不出"谁采到了却没能进库"：09-25 那次 summary 是 53 素材 / 30 条目，
+# 数字都对，qoder 采到了却被熔断饿死这件事一个数都看不出来 —— 最后是翻库加重跑
+# discover 才查明的。这两个键让"采到的源"与"进库的源"能直接对账。
+
+
+def test_summary_accounts_materials_and_entries_by_source(pipeline, monkeypatch):
+    monkeypatch.setattr(sync.collect, "gather", lambda day, scope=None, **kw: DayRaw(
+        day=day,
+        collected_at=datetime(2026, 9, 20, 12, 0, 0),
+        materials=[make_material("claude_code", "a"),
+                   make_material("claude_code", "b"),
+                   make_material("qoder", "c")]))
+    monkeypatch.setattr(sync.distill, "distill",
+                        lambda day_raw: [make_entry(day_raw.day)])
+
+    summary = sync.run(DAY)
+
+    # 素材侧两个源都在，条目侧只剩 claude_code —— qoder 半路掉了，一眼可见。
+    assert summary["materials_by_source"] == {"claude_code": 2, "qoder": 1}
+    assert summary["entries_by_source"] == {"claude_code": 1}
+
+
+def test_summary_lists_the_biggest_source_first(pipeline, monkeypatch):
+    """多的源排前面：熔断按序砍尾时，第一眼要看见谁吃掉了当天的额度。
+
+    顺序是契约的一部分（谁读 summary 都是拿眼睛读的），所以按条数降序、
+    同数按名字升序 —— 定死顺序，重排了就得有人说话。
+    """
+    monkeypatch.setattr(sync.collect, "gather", lambda day, scope=None, **kw: DayRaw(
+        day=day,
+        collected_at=datetime(2026, 9, 20, 12, 0, 0),
+        materials=[make_material("codex", "a"),
+                   make_material("claude_code", "b"),
+                   make_material("claude_code", "c"),
+                   make_material("claude_code", "d")]))
+
+    summary = sync.run(DAY)
+
+    assert list(summary["materials_by_source"]) == ["claude_code", "codex"]
+
+
+def test_summary_orders_equal_sources_by_name_not_by_first_seen(pipeline, monkeypatch):
+    """条数优先于名字；条数并列时按名字升序，**不按"谁先出现"**。
+
+    上面那条一个人测不出来：夹具里"字母序"恰好与"条数序"一致，于是把 key
+    整个丢掉、或并列时拿条数比，三种写法给出同一个答案 —— 那三个变异体因此
+    全活着。这条故意让两个顺序打架。
+
+    对应三个存活体：`sync.x__by_source__mutmut_5` / `_7`（丢了 key，退化成按
+    名字排）与 `_11`（并列时拿条数比，退化成"先来后到"）。
+    """
+    monkeypatch.setattr(sync.collect, "gather", lambda day, scope=None, **kw: DayRaw(
+        day=day,
+        collected_at=datetime(2026, 9, 20, 12, 0, 0),
+        # 出现顺序是 zeta, beta, alpha —— 与"按名字"和"按条数"都不同。
+        materials=[make_material("zeta", "a"),
+                   make_material("zeta", "b"),
+                   make_material("zeta", "c"),
+                   make_material("beta", "d"),
+                   make_material("alpha", "e")]))
+
+    summary = sync.run(DAY)
+
+    assert list(summary["materials_by_source"]) == ["zeta", "alpha", "beta"]
 
 
 # --- file lock (F2) ---
@@ -305,7 +386,27 @@ def test_main_prints_summary_json_to_stdout(pipeline, capsys):
         "entries": 1,
         "upserted": 1,
         "raw_removed": 0,
+        "materials_by_source": {"claude_code": 1},
+        "entries_by_source": {"claude_code": 1},
+        "skipped_by_source": {},
     }
+
+
+def test_summary_reports_entries_skipped_by_novelty(pipeline, monkeypatch):
+    """入库侧被新颖度拦掉的条目要出现在汇总里（AC-015 的另一半）。
+
+    `per_source`（快照，蒸馏侧）说「蒸馏产出了几条」，这里说「其中几条没进库」——
+    两者合起来才能把「有素材 → 0 点」拆成蒸馏侧还是入库侧的问题。
+    """
+    monkeypatch.setattr(
+        sync.ingest,
+        "upsert",
+        lambda entries: Report(upserted=0, skipped_by_source={"claude_code": 1}),
+    )
+
+    summary = sync.run(DAY)
+
+    assert summary["skipped_by_source"] == {"claude_code": 1}
 
 
 def test_main_rejects_invalid_date(pipeline):

@@ -37,6 +37,20 @@ class Report:
     """一次入库的结果摘要。"""
 
     upserted: int
+    skipped_by_source: dict[str, int] = field(default_factory=dict)
+
+
+def _skipped_by_source(
+    ordered: list[tuple[UUID, list[float], Entry]],
+    kept_indices: list[int],
+) -> dict[str, int]:
+    """被新颖度拦下的条目按源计数（AC-015：入库侧拦下 ≠ 蒸馏没产出）。"""
+    kept = set(kept_indices)
+    counts: dict[str, int] = {}
+    for index, (_, _, entry) in enumerate(ordered):
+        if index not in kept:
+            counts[entry.source] = counts.get(entry.source, 0) + 1
+    return counts
 
 
 def _client() -> QdrantClient:
@@ -122,6 +136,8 @@ def upsert(entries: list[Entry]) -> Report:
         client=client,
         collection_name=config.COLLECTION,
     )
+    # 在哪一侧被拦下要分开记：蒸馏产出 0 与入库被新颖度拦掉是两种现场（AC-015）。
+    skipped = _skipped_by_source(ordered, kept_indices)
     # 只对会真正入库的条目建关联边（FR-017 / T027）：重复项已被 filter_novel
     # 跳过，不该再参与建边。复用同一个 client，不多建连接。
     kept = [ordered[index] for index in kept_indices]
@@ -148,7 +164,7 @@ def upsert(entries: list[Entry]) -> Report:
         for point_id, vector, entry in kept
     ]
     if not points:
-        return Report(upserted=0)
+        return Report(upserted=0, skipped_by_source=skipped)
 
     client.upsert(
         collection_name=config.COLLECTION,
@@ -164,4 +180,4 @@ def upsert(entries: list[Entry]) -> Report:
             payload={"related": related},
             points=[existing_id],
         )
-    return Report(upserted=len(points))
+    return Report(upserted=len(points), skipped_by_source=skipped)

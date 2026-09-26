@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import sys
+from collections import Counter
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -129,10 +130,25 @@ def run(day: date | None = None, *, allow_shrink: bool = False) -> dict:
         "materials": len(day_raw.materials),
         "entries": len(entries),
         "upserted": report.upserted,
+        "skipped_by_source": report.skipped_by_source,
         "raw_removed": len(removed),
+        "materials_by_source": _by_source(day_raw.materials),
+        "entries_by_source": _by_source(entries),
     }
     logger.info("sync done: %s", summary)
     return summary
+
+
+def _by_source(items: list[collect.RawMaterial | ingest.Entry]) -> dict[str, int]:
+    """按 `source` 计数，条数多的在前（同数按名字升序）。
+
+    只对账"采到了"与"进了库"：两个键取自同一次运行的同一批对象，所以
+    `entries_by_source` 里少掉的源就是被熔断砍掉的那个。缺键表示该源当天
+    为零，不补零 —— 真要逐个源点名得靠 `iter_plugins()` 的全量清单，那是
+    另一件事，别在这里假装知道。
+    """
+    counts = Counter(item.source for item in items)
+    return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
 
 
 def _parse_day(argv: list[str]) -> date | None:

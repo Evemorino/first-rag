@@ -170,12 +170,39 @@ def _parse_json_object(raw: str) -> dict:
     return payload
 
 
-def _finish(day_raw: DayRaw, model: str, rubric_hash: str, status: str) -> None:
-    """记录本次蒸馏结果并落盘快照 —— 三条出口路径都要做这一件事。"""
+def _per_source_counts(
+    materials: list[RawMaterial], entries: list[Entry]
+) -> dict[str, dict[str, int]]:
+    """逐源「采到几个 / 蒸馏后剩几个」（AC-015：有素材却没产出要能判出来）。"""
+    counts: dict[str, dict[str, int]] = {}
+    for source in [m.source for m in materials] + [e.source for e in entries]:
+        counts.setdefault(source, {"materials": 0, "kept": 0})
+    for material in materials:
+        counts[material.source]["materials"] += 1
+    for entry in entries:
+        counts[entry.source]["kept"] += 1
+    return counts
+
+
+def _finish(
+    day_raw: DayRaw,
+    model: str,
+    rubric_hash: str,
+    status: str,
+    *,
+    per_source: dict[str, dict[str, int]] | None = None,
+) -> None:
+    """记录本次蒸馏结果并落盘快照 —— 三条出口路径都要做这一件事。
+
+    `per_source` 是 AC-015 的判据：素材数 >0 而 kept=0 时，得能分清「这个源没产出」
+    与「这个源根本没素材」。入库侧被新颖度拦下的部分不在快照里 —— 快照写在
+    `ingest` 之前，那部分由 `sync` 汇总的 `skipped_by_source` 给出。
+    """
     day_raw.distill_run = {
         "model": model,
         "rubric_hash": rubric_hash,
         "status": status,
+        "per_source": per_source or {},
     }
     save_snapshot(day_raw)
 
@@ -337,8 +364,10 @@ def distill(day_raw: DayRaw) -> list[Entry]:
             created_at,
         )
         if not _llm_materials(day_raw):
-            entries = _cap_entries(_dedupe_entries(direct_entries), max_entries)
-            _finish(day_raw, "direct", rubric_hash, "ok")
+            combined = _dedupe_entries(direct_entries)
+            entries = _cap_entries(combined, max_entries)
+            _finish(day_raw, "direct", rubric_hash, "ok",
+                    per_source=_per_source_counts(day_raw.materials, entries))
             return entries
 
         model = config.env("CHAT_MODEL")
@@ -346,12 +375,12 @@ def distill(day_raw: DayRaw) -> list[Entry]:
         valid = _batched_llm_entries(
             day_raw, schema, allowed_types, version, created_at)
 
-        entries = _cap_entries(
-            _dedupe_entries([*direct_entries, *valid]),
-            max_entries,
-        )
-        _finish(day_raw, model, rubric_hash, "ok")
+        combined = _dedupe_entries([*direct_entries, *valid])
+        entries = _cap_entries(combined, max_entries)
+        _finish(day_raw, model, rubric_hash, "ok",
+                per_source=_per_source_counts(day_raw.materials, entries))
         return entries
     except Exception:
-        _finish(day_raw, model, rubric_hash, "failed")
+        _finish(day_raw, model, rubric_hash, "failed",
+                per_source=_per_source_counts(day_raw.materials, []))
         raise
