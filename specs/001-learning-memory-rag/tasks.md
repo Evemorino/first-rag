@@ -254,6 +254,14 @@
 - [ ] T066 [US1] 【用户】手写 LG-001「Dogfood 首印象」，完成后勾选 T020 per tasks.md:66（LG-001，partial）——*61 条任务里**唯一未勾选**的一条。两次 Dogfood 都已真跑（① 2026-09-24 sync 983s / ask 103.9s / 四端点 curl 全过；② T045 的 AC 全量回归），缺的只是人写的那一段。这是流程里唯一只有用户能完成的阻塞项。*
 - [ ] T067 [US6] 【用户】为实施期新增的技术决策补 ADR（结论由用户撰写，AI 只提供素材与选项） per PRD.md:289（LG-005，partial）——*PRD §7 的 ADR 表仍是 ADR-1…11（全部产生于实施前），而实施期至少新增了 6 个够格的决定：蒸馏并行化（`parallel_workers`）、按输出切批（`batch_max_chars`）、思维链默认关（`retrieval.disable_thinking`）、SQLite `mode=ro`、快照写保护（`ALLOW_SHRINK`）、迁移判据用 ref 路径。它们目前只在 tasks.md/§9/§13 里带**AI 写的**理由；仓库无 `docs/adr/`、无 `CONTEXT.md`。*
     - **素材已备（AI 整理）：`specs/001-learning-memory-rag/adr-candidates.md`** —— 6 条候选逐条给「现状（含文件:行）/ 备选（含被否的）/ 当时的证据 / 可逆性 / 待你判断的开放问题」，另附 4 条边界候选（计时按天、键名不改名、变异分数让路文案、README 基线无门禁）与**格式问题**（现有 ADR 表是三列一行式，装不下备选与证据 —— 格式须先定）。结论仍由用户撰写。
+    - **2026-09-26 已推进（按建议执行，格式已定）**：格式走 `docs/adr/NNNN-title.md`、编号**从 ADR-12 续**
+      （PRD §7 的 ADR-1…11 不动，保持一条序列）。`ADR-c2 / c3 / c5` 三条已落成
+      `docs/adr/0012-batch-by-output.md`、`0013-thinking-off-for-ask.md`、`0014-snapshot-write-protection.md`：
+      **背景 / 备选与被否的理由 / 当时的证据 / 可逆性与已知代价都已填满，每条末尾三个具体待答问题**，
+      只有 `## 决策（待你写）` 一节等你写（状态栏是 Proposed）；`docs/adr/README.md` 是目录说明与写法。
+      PRD §7 表下加了一行指针指向它们（**结论未定，所以不上表**）。`ADR-c1 / c4 / c6`
+      （`parallel_workers` / SQLite `mode=ro` / 迁移判据用 ref 路径）信息量本来是一行 —— 结论定了回 §7 各加一行，
+      不单独建文件。**剩下的只有你写那三段结论**（写完后勾本条并在 PRD §13 加一行）。
 - [x] T068 [US5] 重跑 `make mutation` 并 `make baseline-update`，让 README 的质量基线覆盖 T060 之后的代码 per README.md 变异基线（T059，partial）——*`make baseline` 报 **45 个** src/tests 文件 mtime 晚于上次跑批（含 T060 新增的 `save_snapshot` 与 8 条测试）。当前 README 的 `1788 / 189 / 14 → 90.4%` 只与 `mutants/` 这份**旧缓存**自洽，未覆盖最新改动。工具自己提示「mtime 只说明动过，内容可能没变」——要确认就得真跑。**本轮已落实**：`make mutation` 重跑 → **1821 / 214 / 14 → 89.5%**，`make baseline-update` 写回 README，`make baseline` 复核 **✓ 一致**。*
 - [x] T069 [US1] `data-model.md:44-52` 的 config schema 块补上 4 个缺失键 per data-model.md:48（FR-007/019，partial）——*文中自称「结构即契约」，但 `distill` 只列 7 键（实际 9，缺 `batch_max_chars`、`parallel_workers`）、`retrieval` 只列 `top_k`+`expand`（实际 4，缺 `answer_max_tokens`、`disable_thinking`）。这 4 个恰好全是实施期新增的。**本轮已落实**：`data-model.md` schema 块补 `batch_max_chars` / `parallel_workers` / `answer_max_tokens` / `disable_thinking` 四键，并注明属**实施期新增**、交叉引用 T067。*
 - [x] T070 [US1] 删掉 `quickstart.md:22` 里代码中并不存在的「写回 `.env`」 per quickstart.md:22（FR-002，partial）——*`scripts/embed_test.py` 只做 `config.load_env()`（第 23 行，只读）与建/查集合，**从不写 `.env`**。模型 ID 是人工填进 `.env` 的，文档写成了脚本行为，会让人跑完等一个不会发生的事。**本轮已落实**：`quickstart.md:22` 删掉「写回 .env」，改为「脚本只读 .env，模型 ID 由你手工填」。*

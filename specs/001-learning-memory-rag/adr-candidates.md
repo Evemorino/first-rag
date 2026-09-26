@@ -236,4 +236,11 @@
 - **放哪**：`docs/adr/`（仓库里还没有 `docs/`），还是 PRD §7 表继续加行？
 - **ADR 编号**：从 ADR-12 续，还是另起 `ADR-001`（markdown ADR 惯例）？
 
-格式定了之后，上面每条的「待你判断」就是你需要填的空。
+**2026-09-26 已定（按建议执行）**：格式走 `docs/adr/NNNN-title.md`，编号**从 ADR-12 续**
+（保持一条序列，PRD §7 的 ADR-1…11 不动）。ADR-c2 / c3 / c5 已按此落成
+`docs/adr/0012-batch-by-output.md`、`0013-thinking-off-for-ask.md`、
+`0014-snapshot-write-protection.md` —— 背景 / 备选 / 证据 / 可逆性已填满，`## 决策` 段留空
+待写、状态 Proposed；c1 / c4 / c6 三条结论定了之后回 PRD §7 各加一行摘要，不单独建文件。
+目录说明见 `docs/adr/README.md`。
+
+上面每条的「待你判断」就是你需要填的空。
