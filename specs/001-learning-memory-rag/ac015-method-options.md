@@ -237,3 +237,64 @@ SC-017（仓库惯例）。
 以及写入边界登记项的 `only_from`。它换来的收益是「采集验证零落盘」；而 v0.7.8 已把最危险的
 覆盖（多源 → 单源）拦住了，剩下的是「同数量 + 同来源集合但内容不同」这种窄缝。所以它是
 **独立的一次行为变更**，值不值得做见 §7 第 2 条 —— 不该被 8.3(a) 顺带捎上。
+
+---
+
+## 9. T083 的落地设计（2026-09-26 复核：成本比 §4 估的低得多，待批准）
+
+§7 第 2 条问「值不值得用一次行为变更换掉一个靠人记得的流程」，第 3 条问「落盘归谁」。
+第 3 条有明确答案，而且复核后**§4 那张成本表有一半不成立** —— 先把量准，你再判值不值。
+
+### 9.1 推荐：`gather` 加 `persist: bool = True`，落盘**不搬家**
+
+```python
+def gather(day, scope=None, *, allow_shrink=False, persist=True):
+    ...
+    if persist:
+        save_snapshot(day_raw, allow_shrink=allow_shrink)
+```
+
+- **为什么不把落盘上移到 `sync.run`**：`distill` 自己也写同一份快照（终态 `ok`/`failed`
+  由它算出来，`src/distill.py:207`、`:345`），上移就要把「谁写快照」拆到三个调用点重排。
+  加开关的改动面小一个量级，FR-006 的契约（快照由 collect 写）也不动。
+- **为什么不选 §5 的「先复制再还原」**：那条把 `ALLOW_SHRINK=1` 变成验收流程里的常规
+  旁路，且仍然靠人记得。
+
+### 9.2 复核后的成本（§4 的五项里三项不用动）
+
+§4 那张表是按「落盘上移」估的。改成「加开关」后逐项重核（实测 grep + 读门禁）：
+
+| §4 的原估 | 复核结果 |
+|---|---|
+| `src/collect.py:57-91` 要改 | **成立**：`if persist:` 一处 + docstring 补一句 |
+| `src/sync.py:124` 的锁范围/调用点 | **不用动**：它是唯一的生产调用点（实测 `grep -rn 'gather(' src/` 只此一处），走默认 `persist=True`，**生产路径零改动**；落盘天然仍在锁内 |
+| `src/distill.py:180`/`:318` 要一起理顺 | **不用动**：那两处写的是同一文件的不同字段（`noop` 与终态），与本次无关。另：行号已漂到 `:207`/`:345` |
+| 测试 15 处调用点要改 | **不用改**：15 处全是 `collect.gather(DAY…)` 的位置参数形式（test_collect 12 / test_scope 2 / test_plugin_extension 1），默认值正是它们要的行为；`test_sync` 的两个替身写作 `def fake_gather(day, scope=None, **kwargs)`，也吸收得住 |
+| `write_boundary_check.py` 的登记项 + `only_from` 要同步 | **不用动**：`src/collect.py:save_snapshot` 的登记项**没有** `only_from`（全仓只有 `src/scope.py:save` 用了它，那是宪法 V 的 `config/scope.json` 例外）；本次既没新增写入点也没位移。`scan()` 扫的是 `SOURCE_ROOT`＝`src/`，所以 `scripts/` 下的探针本就在扫描面之外 |
+
+**真实成本**：`src/collect.py` 一个参数 + 一个只读探针脚本 + 1 条新测试 + `quickstart.md`
+的方法段改走探针；**外加一次约半小时的变异批次重跑**（`src/collect.py` 在 `only_mutate`
+里，加行即加变异体 → README 基线数字要重测）。
+
+### 9.3 剩下的真实风险（就一条）
+
+`gather` 的 docstring 现在写着 persist 属 FR-006（gather 就是落盘的那条路）。加开关后
+这句话要改，否则会漂 —— 而 `persist=False` 这条路径**没有门禁盯着**（探针在 `scripts/`
+下，不在写入边界的扫描面内；它不落盘靠的是 `if persist:` 这一行）。可接受的兜底 = 一条
+单测（前后比对目录，断言快照未生成）。我倾向就接受这个形状；若你要更强的机械保证，
+我没有更便宜的方案，愿意听你的。
+
+### 9.4 批准后逐条可核对的动作
+
+1. `src/collect.py`：加 `persist` 参数与分支，docstring 写明「`persist=False` 是只读探针
+   路径」，并说明 FR-006 的持久化仍归 collect。
+2. `scripts/collect_probe.py`：`--day D [--source X]`，调 `gather(..., persist=False)`，
+   打素材条数与来源分布，**不写任何文件**。
+3. `tests/unit/test_collect.py`：新增「`persist=False` 不写快照，且返回值与落盘版一致」。
+4. `quickstart.md`：AC-015 的「①素材非空」改走探针（零落盘）；「②结局可判」仍走一次
+   全源 sync（它本来就要入库）。
+5. PRD：v0.7.11 变更记录（行为变更：新增一条不落盘的采集路径）+ AC-015 方法段指向。
+6. 门禁全跑，并按 `make mutation` 的结果更新 README 基线。
+
+**本次不动**：`sync.run`、`distill` 的两处 `save_snapshot`、`ALLOW_SHRINK` 的语义 ——
+一次只动一个变量，否则回退时说不清是哪一处带来的。
