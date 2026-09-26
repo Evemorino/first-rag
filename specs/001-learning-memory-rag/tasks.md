@@ -279,7 +279,8 @@
 - [x] T077 [US1] 【用户】补 LG-003 的预测留痕：为 T027（关联边）补一段对照复盘，或显式豁免 per PRD.md:287（LG-003，partial）——*`notes/` 只有 `t015-prediction.md` 与 `t017-prediction.md`；同为 ★ 的 T027/T037 没有预测记录，而 tasks.md 的 Dependencies 节写着「每个 ★ 任务前用户先写预期行为（LG-003，记入 notes/）」。**预测窗口已过**，强行补写预测等于编造——所以选项是复盘（T027 的关联边现在可以用真实库对照：126 点里 16 条有边）或明确豁免这一条。*
     - **2026-09-26 候选措辞已落盘（AI 依用户授权起草）**：`notes/t027-review.md` 末尾写好一份候选稿，取「显式豁免预测对照 + 事后解读」路线（理由：事后回忆冒充当时的预测，比没有更糟），并把 §3 的两条读数归因为**设计**、把「0.85 对齐线从未被真实触发」归因为**语料**。**你把它改成自己的话即算完成。**
     - **2026-09-27 已收口**：取「显式豁免预测对照 + 事后解读」路线，文本在 `notes/t027-review.md`；「0.85 对齐线在真实语料上从未触发」已记为已知缺口。
-- [ ] T085 [US6] 【用户】给剩下三条一行式 ADR 候选（`parallel_workers` / SQLite `mode=ro` / 迁移判据用 ref 路径）各写一句结论 per T067（LG-005，partial）——*从 T067 拆出：这三条信息量本来是一行，不单独建 ADR 文件，结论定了回 `PRD.md` §7 各加一行。逐题材料见 `specs/001-learning-memory-rag/adr-candidates.md` 各条的「待你判断」段，问答清单已按同样格式追加在 `notes/decision-sheet.md` 末尾。*
+- [x] T085 [US6] 【用户】给剩下三条一行式 ADR 候选（`parallel_workers` / SQLite `mode=ro` / 迁移判据用 ref 路径）各写一句结论 per T067（LG-005，partial）——*从 T067 拆出：这三条信息量本来是一行，不单独建 ADR 文件，结论定了回 `PRD.md` §7 各加一行。逐题材料见 `specs/001-learning-memory-rag/adr-candidates.md` 各条的「待你判断」段，问答清单已按同样格式追加在 `notes/decision-sheet.md` 末尾。*
+    - **2026-09-27 已收口（用户裁定全 A）**：三条结论并入 `PRD.md` §7 表 —— `parallel_workers=8` → **ADR-15**（记为实测最优点、非推导；末轮空转接受；限流边界记为未采样）、SQLite `mode=ro` → **ADR-16**（补记「复制到 tmp 再读」这条未评估的备选；接受「db 逐字节不变 + sidecar mtime 属已知边界」的降级）、迁移判据用 ref 路径 → **ADR-17**（一次性脚本同样适用 fail-safe；`data/migrations/` 备份保留，删除判据 = 下次全量 redistill 验证通过后）。至此 tasks.md 全部条目勾完。
 
 **—— 以下 4 条来自 2026-09-26 的第二次独立复查（见本节开头）——**
 

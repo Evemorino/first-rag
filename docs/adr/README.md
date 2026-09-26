@@ -24,11 +24,11 @@ ADR-1…11 是**实施前**的决定，以三列摘要表的形式记在 [`PRD.m
 - **ADR-14**：取「拒写 + `ALLOW_SHRINK` 明路」（更怕静默弄丢基线）；变异分数 89.6% → 88.6%
   记为已接受代价、并写明这是**度量口径问题**；写明「守卫的完备性由变异测试守、不由覆盖率守」。
 
-## 还没结的三条一行式候选（T085）
+## 三条一行式候选已结（T085 → PRD §7 的 ADR-15/16/17）
 
 `parallel_workers` / SQLite `mode=ro` / 迁移判据用 ref 路径 —— 信息量本来是一行，不单独建文件：
-逐题材料在各条的「待你判断」段（`specs/001-learning-memory-rag/adr-candidates.md`），
-等用户逐条给结论后回 `PRD.md` §7 各加一行。
+2026-09-27 由用户裁定（全 A）后**并入 `PRD.md` §7 表**（ADR-15 / ADR-16 / ADR-17），
+逐题材料留在 `specs/001-learning-memory-rag/adr-candidates.md` 各条的「待你判断」段。
 
 ## 以后新增 ADR 怎么写
 
