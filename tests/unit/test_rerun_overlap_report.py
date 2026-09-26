@@ -1,8 +1,9 @@
 """`scripts/rerun_overlap_report.py` 的单元测试。
 
 这个脚本要回答的是「同日重跑多出来的条目算不算近似重复」—— 而 FR-007/AC-003
-的裁决就压在这个答案上。所以三件事必须测准：**比较的是谁**（必须排除本簇，
-与 `filter_novel` 同口径）、**阈值是严格大于**（与 `filter_novel` 的 `>` 一致）、
+的裁决就压在这个答案上。所以四件事必须测准：**比较的是谁**（跨运行那一组必须
+排除本簇，与 `filter_novel` 同口径）、**对照组是另一组**（簇内近邻单独算，
+不能被跨簇的分数顶替）、**阈值是严格大于**（与 `filter_novel` 的 `>` 一致）、
 以及**连不上 Qdrant 时给出路而不是栈**（它是给人做裁决前跑的工具）。
 """
 
@@ -93,24 +94,6 @@ def test_cosine_is_scale_invariant():
     assert report.cosine([1.0, 1.0], [10.0, 10.0]) == 1.0
 
 
-# --- nn_scores --------------------------------------------------------------
-
-
-def test_nn_scores_picks_the_nearest_other_vector():
-    scores = report.nn_scores([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
-    assert scores == [1.0, 1.0, 0.0]
-
-
-def test_nn_scores_skips_self_not_others():
-    """自己与自己的分数是 1.0，但它不该参与 —— 否则每条都是 1.0，报告全废。"""
-    assert report.nn_scores([[1.0, 0.0], [0.0, 1.0]]) == [0.0, 0.0]
-
-
-def test_nn_scores_is_empty_for_zero_or_one_vector():
-    assert report.nn_scores([]) == []
-    assert report.nn_scores([[1.0, 0.0]]) == []
-
-
 # --- percentile -------------------------------------------------------------
 
 
@@ -183,6 +166,38 @@ def test_external_nn_is_empty_when_there_is_only_one_run():
     assert report.external_nn_scores([[1.0, 0.0], [0.0, 1.0]], {"A": [0, 1]}) == []
 
 
+# --- 同一次运行内部的最近邻（对照组：阈值不该碰的地方）----------------------
+
+
+def test_internal_nn_ignores_points_from_other_runs():
+    """跨簇的近邻**不算** —— 这一组要的是"同一次蒸馏写出的条目之间有多像"。
+
+    它们是必须共存的不同条目，理论上界就是判据不该碰的地方。构造：簇 A 内两条
+    互相正交（簇内相似度 0.0），簇 B 里有一条与 A 的第 0 条同向 —— 簇内的读数
+    必须是那个 0.0，而不是跨簇的 1.0。
+    """
+    vectors = [[1.0, 0.0], [0.0, 1.0], [1.0, 0.0]]
+    groups = {"A": [0, 1], "B": [2]}
+    assert report.internal_nn_scores(vectors, groups) == [0.0, 0.0]
+
+
+def test_internal_nn_reports_the_best_same_run_neighbour():
+    """簇内最近邻取的是**同一**簇里的最好成绩，不管它是哪一条给的。"""
+    vectors = [[1.0, 0.0], [0.9, 0.1], [0.0, 1.0]]
+    groups = {"A": [0, 1, 2]}
+    scores = report.internal_nn_scores(vectors, groups)
+    assert scores[0] == pytest.approx(report.cosine([1.0, 0.0], [0.9, 0.1]))
+    assert scores[1] == pytest.approx(report.cosine([0.9, 0.1], [1.0, 0.0]))
+    assert scores[2] == pytest.approx(report.cosine([0.0, 1.0], [0.9, 0.1]))
+    assert scores[0] > scores[2]  # 第 2 条与谁都近得有限，另两条几乎同向
+
+
+def test_internal_nn_is_empty_when_every_run_is_a_singleton():
+    """每条各自成簇就没有"簇内其它条目"可言 —— 与 external 同一条规矩。"""
+    vectors = [[1.0, 0.0], [1.0, 0.0]]
+    assert report.internal_nn_scores(vectors, {"A": [0], "B": [1]}) == []
+
+
 # --- summarize / max_abs_delta ---------------------------------------------
 
 
@@ -231,6 +246,33 @@ def test_analyze_reports_the_run_count_per_day():
     assert [r["runs"] for r in rows] == [2]
 
 
+def test_analyze_keeps_the_internal_and_external_neighbours_apart():
+    """两天各一条不能顶替：IN 记的是簇内，EX 记的是跨运行 —— 两者可以完全不同。"""
+    points = [
+        point("2026-09-24", [1.0, 0.0], "2026-09-24T22:52:19"),
+        point("2026-09-24", [0.0, 1.0], "2026-09-24T22:52:19"),
+        point("2026-09-24", [1.0, 1.0], "2026-09-24T23:41:25"),
+    ]
+    rows, _, detail = report.analyze(points, 0.82)
+    row = rows[0]
+    assert row["internal"]["n"] == 2  # 第一批那两条互相有伴
+    assert row["external"]["n"] == 3  # 三条都能在另一批里找到近邻
+    assert any("同一次运行内部最近邻" in line for line in detail)
+    assert any("跨运行最近邻" in line for line in detail)
+
+
+def test_analyze_counts_the_day_points_not_the_scored_pairs():
+    """`pts` 列是当天的点数：孤条不进 IN 的分母，但它仍占一天一条。"""
+    points = [
+        point("2026-09-24", [1.0, 0.0], "2026-09-24T22:52:19"),
+        point("2026-09-24", [0.0, 1.0], "2026-09-24T23:41:25"),
+        point("2026-09-24", [0.5, 0.5], "2026-09-24T23:59:59"),
+    ]
+    rows, _, _ = report.analyze(points, 0.82)
+    assert rows[0]["points"] == 3
+    assert rows[0]["internal"]["n"] == 0  # 三次运行各一条，簇内谁都没伴
+
+
 def test_analyze_with_an_unknown_day_returns_no_detail():
     points = [point("2026-09-24", [1.0, 0.0])]
     rows, day, detail = report.analyze(points, 0.82, day="2026-01-01")
@@ -241,6 +283,43 @@ def test_analyze_with_an_unknown_day_returns_no_detail():
 
 def test_analyze_of_no_points_is_an_empty_report():
     assert report.analyze([], 0.82) == ([], None, [])
+
+
+# --- render_overview --------------------------------------------------------
+
+
+def test_render_overview_shows_in_and_ex_side_by_side():
+    """两组必须并排出现，并带上读法：只给一组数字时"该降阈值吗"无从判断。"""
+    rows = [
+        {
+            "date": "2026-09-24",
+            "runs": 3,
+            "points": 87,
+            "internal": report.summarize([0.12, 0.75], 0.82),
+            "external": report.summarize([0.2, 0.81], 0.82),
+        }
+    ]
+    text = "\n".join(report.render_overview(rows, 0.82))
+    assert "IN max" in text and "EX max" in text
+    assert "87" in text
+    assert "0.750" in text and "0.810" in text
+    assert "先看 IN 再看 EX" in text
+
+
+def test_render_overview_marks_the_external_columns_na_for_a_single_run_day():
+    """一天只跑过一次时没有"跨运行"可比 —— 记 n/a，而不是编一个 0.0 出来。"""
+    rows = [
+        {
+            "date": "2026-09-18",
+            "runs": 1,
+            "points": 27,
+            "internal": report.summarize([0.3, 0.836], 0.82),
+            "external": report.summarize([], 0.82),
+        }
+    ]
+    text = "\n".join(report.render_overview(rows, 0.82))
+    assert "n/a" in text
+    assert "0.836" in text  # 簇内那一列照样有数
 
 
 # --- main（含"连不上"的出路）------------------------------------------------

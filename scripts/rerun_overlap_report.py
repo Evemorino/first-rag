@@ -32,9 +32,23 @@ LLM 蒸馏显式豁免在幂等承诺之外（`.specify/memory/constitution.md:3
 
 数怎么看
 --------
-「本簇之外最近邻」的分布若整片落在阈值以下，说明同日的多次运行产出的是**不同内容**
-（判据没拦住是对的）；若大量集中在阈值以上，才是近似重复。余量也要看：贴着阈值的
-最大值说明结论对阈值敏感，那是另一个可单独裁决的议题。
+表里每天给两对数字，缺一不可：
+
+  **IN**（同一次运行内部）—— 对照组：这些条目必须**共存**，它们是同一次蒸馏产出的
+  不同条目。理论上界就是判据不该碰的地方。
+  **EX**（跨运行）—— `filter_novel` 要看的量：本批之外的最近邻。
+
+读法是**先看 IN 再看 EX**：
+
+  - EX 整片在阈值以下 → 判据没拦住是对的（同日的多次运行产出的确实是不同内容）；
+  - EX 集中在阈值以上 → 才是近似重复；
+  - **IN max 高过 EX max** → 阈值不是问题所在。这时降阈值**先误伤真条目**，
+    而且对真正冗余的那一对（同一次运行内部的）依然无能为力 —— 因为
+    `filter_novel` 把本批 ID 排除在外，同批之间根本不比。2026-09-26 实测就是
+    这个样子（IN max 0.906 vs EX max 0.813），详见
+    `specs/001-learning-memory-rag/fr007-rerun-options.md`。
+
+余量也要看：贴着阈值的最大值说明结论对阈值敏感。
 """
 
 from __future__ import annotations
@@ -74,13 +88,24 @@ def cosine(a: Sequence[float], b: Sequence[float]) -> float:
     return dot / math.sqrt(na * nb)
 
 
-def nn_scores(vectors: Sequence[Sequence[float]]) -> list[float]:
-    """每条向量到**其它**向量的最大 cosine；不足两条时返回空列表。"""
+def internal_nn_scores(
+    vectors: Sequence[Sequence[float]], groups: dict[str, list[int]]
+) -> list[float]:
+    """每条向量到**本簇之内**其它向量的最大 cosine —— `external` 的对照组。
+
+    这一组是"必须共存"的条目：同一次蒸馏写出的不同条目，任何判据都不该把它们
+    判成重复。所以它是阈值的**下界约束** —— 只有当 IN 明显低于 EX 时，
+    "把阈值调低"才是个安全的旋钮。
+    """
+    member: dict[int, str] = {}
+    for key, indices in groups.items():
+        for index in indices:
+            member[index] = key
     out: list[float] = []
     for i, a in enumerate(vectors):
         best = None
         for j, b in enumerate(vectors):
-            if i == j:
+            if i == j or member.get(i) != member.get(j):
                 continue
             score = cosine(a, b)
             if best is None or score > best:
@@ -209,38 +234,57 @@ def _fmt(value: float) -> str:
     return "  n/a" if value != value else f"{value:>6.3f}"
 
 
-def render_overview(rows: list[dict[str, Any]], threshold: float) -> list[str]:
-    lines = [
-        f"同日重跑重叠度报告（阈值 novelty_threshold = {threshold}）",
-        "",
-        f"{'date':<12}{'n':>4}{'runs':>5}{'NN p25':>8}{'NN p50':>8}{'NN p75':>8}"
-        f"{'NN max':>8}{'>thr':>6}",
-    ]
-    for row in rows:
-        s = row["summary"]
-        lines.append(
-            f"{row['date']:<12}{s['n']:>4}{row['runs']:>5}{_fmt(s['p25'])}{_fmt(s['p50'])}"
-            f"{_fmt(s['p75'])}{_fmt(s['max'])}{s['above']:>6}"
-        )
-    lines.append("")
-    lines.append("（NN = 每条条目到同日**其它**条目的最大 cosine；>thr = 超过阈值的条数）")
-    return lines
-
-
-def render_day(
-    day: str, groups: dict[str, list[int]], scores: Sequence[float], threshold: float
-) -> list[str]:
-    lines = [f"=== {day}：{len(groups)} 次运行 ==="]
-    for key, indices in groups.items():
-        lines.append(f"  run {key}  n={len(indices)}")
-    summary = summarize(scores, threshold)
-    lines.append(f"=== {day} 跨运行最近邻（filter_novel 要看的量）===")
-    lines.append(
+def _summary_line(summary: dict[str, Any], threshold: float) -> str:
+    """一组分数的单行明细（`render_day` 的 IN 与 EX 两行共用这一处格式）。"""
+    return (
         f"  n={summary['n']} min={_fmt(summary['min']).strip()}"
         f" p25={_fmt(summary['p25']).strip()} p50={_fmt(summary['p50']).strip()}"
         f" p75={_fmt(summary['p75']).strip()} max={_fmt(summary['max']).strip()}"
         f"  >{threshold}: {summary['above']}"
     )
+
+
+def render_overview(rows: list[dict[str, Any]], threshold: float) -> list[str]:
+    lines = [
+        f"同日重跑重叠度报告（阈值 novelty_threshold = {threshold}）",
+        "",
+        # 分数列宽 6 与 `_fmt` 一致（`f"{x:>6.3f}"`），列间留一格免得两个
+        # 6 字表头粘成 "IN p50IN max"（表头与数据必须同宽同隔）
+        f"{'date':<12}{'pts':>4}{'runs':>5}  |{'IN p50':>6} {'IN max':>6}  |"
+        f"{'EX p50':>6} {'EX max':>6} {'EX>thr':>6}",
+    ]
+    for row in rows:
+        internal = row["internal"]
+        external = row["external"]
+        lines.append(
+            f"{row['date']:<12}{row['points']:>4}{row['runs']:>5}  |"
+            f"{_fmt(internal['p50'])} {_fmt(internal['max'])}  |"
+            f"{_fmt(external['p50'])} {_fmt(external['max'])} {external['above']:>6}"
+        )
+    lines.append("")
+    lines.append(
+        "（IN = 同一次运行内部最近邻：必须共存的对照组；"
+        "EX = 跨运行最近邻：filter_novel 要看的量；"
+        "单次运行的日子没有 EX，记 n/a）"
+    )
+    lines.append("先看 IN 再看 EX：IN max 不低于 EX max 时，降阈值只会先误伤真条目。")
+    return lines
+
+
+def render_day(
+    day: str,
+    groups: dict[str, list[int]],
+    internal: Sequence[float],
+    external: Sequence[float],
+    threshold: float,
+) -> list[str]:
+    lines = [f"=== {day}：{len(groups)} 次运行 ==="]
+    for key, indices in groups.items():
+        lines.append(f"  run {key}  n={len(indices)}")
+    lines.append(f"=== {day} 同一次运行内部最近邻（对照组：必须共存）===")
+    lines.append(_summary_line(summarize(internal, threshold), threshold))
+    lines.append(f"=== {day} 跨运行最近邻（filter_novel 要看的量）===")
+    lines.append(_summary_line(summarize(external, threshold), threshold))
     return lines
 
 
@@ -259,23 +303,33 @@ def analyze(
     rows: list[dict[str, Any]] = []
     for date_key, group in by_date.items():
         vectors = [p.vector for p in group]
+        groups = group_runs([p.payload for p in group])
         rows.append(
             {
                 "date": date_key,
-                "runs": len(group_runs([p.payload for p in group])),
-                "summary": summarize(nn_scores(vectors), threshold),
+                "runs": len(groups),
+                "points": len(group),
+                "internal": summarize(internal_nn_scores(vectors, groups), threshold),
+                "external": summarize(external_nn_scores(vectors, groups), threshold),
             }
         )
 
     if day is None and rows:
-        day = max(rows, key=lambda r: r["summary"]["n"])["date"]
+        day = max(rows, key=lambda r: r["points"])["date"]
     if day is None or day not in by_date:
         return rows, None, []
 
     group = by_date[day]
     groups = group_runs([p.payload for p in group])
-    external = external_nn_scores([p.vector for p in group], groups)
-    return rows, day, render_day(day, groups, external, threshold)
+    vectors = [p.vector for p in group]
+    detail = render_day(
+        day,
+        groups,
+        internal_nn_scores(vectors, groups),
+        external_nn_scores(vectors, groups),
+        threshold,
+    )
+    return rows, day, detail
 
 
 def main(argv: list[str] | None = None) -> int:
