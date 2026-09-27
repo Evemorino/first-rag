@@ -88,7 +88,9 @@ def chat(
     的 finish_reason='length' 截断坑）。
 
     thinking=False 请求服务端跳过思考链。ask 用它把延迟从 ~33s 压到 ~3s；
-    蒸馏不关（同一批素材关掉后条目 9→28，质量差异未经评估）。
+    蒸馏保持开 —— 当初的理由是"同一批素材关掉后条目 9→28"，但 2026-09-27 的
+    同日配对对照（T086）**未复现**这个倍数（ON 24 / OFF 29，≈1.2 倍），
+    质量定性待裁定，详见 docs/adr/0013-thinking-off-for-ask.md 的评估记录。
     """
     response = _client().chat.completions.create(
         model=config.env("CHAT_MODEL"),
