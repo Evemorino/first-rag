@@ -51,8 +51,11 @@ make probe D=$DAY S=qoder    # 只看一个源：合计只算 qoder
   会列在分隔线下面并标明"未计入合计" —— 它们当天确实被采到了，只是不回答这个问题。
 
 要验的源在**现存快照**里有素材的：`claude_code` / `codex` / `kimi_code` / `trae` /
-`trae_work_cn` / `qoder` / `qoder_cn`；在任何现存快照里都没有素材、必须做一次新采集的：
-`zcode` / `workbuddy_ai` / `hermes`（`hermes` 的库为空，AC-015 对它不适用，见 AC-017）。
+`trae_work_cn` / `qoder` / `qoder_cn` / `zcode` / `workbuddy_ai`；`hermes` 的库为空，
+AC-015 对它不适用（见 AC-017）。
+
+**2026-09-27（v0.7.20）这 4 个新源已各真跑一遍并入库**（`qoder` / `qoder_cn` / `workbuddy_ai` 在
+09-20，`zcode` 在 09-14；读数见 PRD §13 v0.7.20），所以上面这一步现在只剩 `hermes` 例外。
 
 ### ② 入库路径通不通 —— 必须真跑一次 sync（这一步写盘，先备份）
 
