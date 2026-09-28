@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type APIRequestContext } from "@playwright/test";
 
 /**
  * AC-018~AC-021 的 8 步验收（T119）。
@@ -9,11 +9,34 @@ import { expect, test } from "@playwright/test";
  */
 const QDRANT = "http://127.0.0.1:6333";
 const COLLECTION = "learning_memory";
+// AC-001 实测的嵌入维度（doubao-embedding-vision → 2048）。只在**集合不存在**时用到：
+// 干净环境里没有 `make embed-test`（它要真调 Ark，CI 没有密钥），集合得自己建。
+const EMBED_DIM = 2048;
 const PROBE_ID = "019c0000-0000-7000-8000-00000000e2e2";
 const PROBE_TEXT = "e2e 探针条目（Playwright 自己 upsert 的，跑完就删）";
 const EDITED_TEXT = "e2e 探针条目 —— 已被人工改过";
 
+/**
+ * 集合不存在就按探针需要的形状建一个（Cosine，EMBED_DIM 维）；存在则一个字都不动。
+ *
+ * 为什么需要这一步：这 8 步走的是列表 / 详情 / 编辑 / 删除，全是 scroll + payload，
+ * **向量不参与比较**；而集合平时由 `make embed-test` 建 —— 那一步要真调 Ark，CI 没有
+ * 密钥。CI 的 Qdrant 是空库，于是探针 upsert 直接 404（第一次跑真 CI 就踩到了：本地
+ * 库里本来就有集合，所以本地永远绿）。已经存在时不重建、也不校验维度：这台机器上的
+ * 真库不该被测试碰。
+ */
+async function ensureCollection(request: APIRequestContext) {
+  if ((await request.get(`${QDRANT}/collections/${COLLECTION}`)).ok()) {
+    return;
+  }
+  const created = await request.put(`${QDRANT}/collections/${COLLECTION}`, {
+    data: { vectors: { size: EMBED_DIM, distance: "Cosine" } },
+  });
+  expect(created.ok(), `建集合失败：${created.status()} ${await created.text()}`).toBeTruthy();
+}
+
 test.beforeAll(async ({ request }) => {
+  await ensureCollection(request);
   const response = await request.put(
     `${QDRANT}/collections/${COLLECTION}/points?wait=true`,
     {
