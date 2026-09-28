@@ -17,6 +17,7 @@
 - **Target Platform**: macOS 本机，单用户
 - **Project Type**: CLI 工具 + 按需 API 服务（非守护进程，PRD ADR-4）
 - **v0.8 新增**: 本机审阅页 —— 零构建静态单页，随 API 进程一起提供；**不引入新依赖、不新增常驻服务**（PRD NFR-008 / NFR-009）
+- **v0.9 变更**: 上面那条**作废** —— 审阅页改由 `web/` 前端工程构建（Vite + React + TypeScript + Zustand + Tailwind + TanStack Query，见 ADR-21）；新增 Node 工具链（版本钉 `mise.toml`、lockfile 入库），**构建产物不入库**，由接口进程读盘提供；**仍不新增常驻服务**（NFR-008 成立），前端被门禁禁止直连向量库/读密钥（NFR-009 第 ④ 条 + NFR-012）
 - **Performance Goals**: 当日 sync ≤5 分钟（NFR-006）。**计时按天**：2026-09-26 最忙日 09-25 全源端到端实测 **248.7s / 300s（83%）**，未突破（PRD v0.7.3 补测；4-源时代的 215.9s 口径已作废，见 PRD §9 风险表）；ask 单次 ≤10 秒（2026-09-25 实测 5.9s 达标；流式首字 0.7s）
 - **Constraints**: 写入仅限 `data/`、`notes/`（宪法 V，NON-NEGOTIABLE）；密钥走 `.env`
 - **Scale/Scope**: 单用户；日蒸馏输出 5–10K 字符；条目总量预期千级
@@ -128,6 +129,7 @@ first-rag/
 | M9 | 收尾 | AGENTS.md / README / 全 AC 回归 + **Dogfood ②** | AC-011 及全量 |
 | M10 | **v0.7 采集面扩展** | 四步，顺序不可换（详见下节）：① `trae`→`trae_work_cn` 迁移 ② SQLite 只读机械门禁 ③ A 族 4 插件 ④ B 族 3 插件 + 逐源计时 | AC-015、AC-016、AC-017 |
 | M11 | **v0.8 审阅页与条目修正** | 三片纵切（LG-002）：① 只读审阅页（列表 + 详情，纯读）② 条目编辑（覆写层）+ 软删除与恢复 + 留痕 ③ 页面打磨与人工冒烟 | AC-018~AC-021 |
+| M12 | **v0.9 审阅页工程化** | 三片纵切：① 前端工程脚手架 + 只读列表/详情（Vite+React+TS+Tailwind+TanStack Query）② 写能力（编辑/软删/恢复 + 409 冲突 + 乐观更新）+ Playwright 覆盖 8 步验收 ③ 设计打磨与 a11y，删掉旧单文件并回灌文档 | AC-018~AC-021（行为不变，换实现） |
 
 ## v0.7 采集面扩展（M10）
 
@@ -173,6 +175,8 @@ B 族三个插件都要读 SQLite，而普通 `sqlite3.connect()` 会在源目�
 - **不动历史工件**：`analysis.md`、`checklists/`、已发布的变更记录行记录的是当时的事实，不追改。
 
 ## v0.8 审阅页与条目修正（M11）
+
+> **v0.9 起本节的"零构建单页"设计被 [ADR-21](../../docs/adr/0021-frontend-toolchain.md) 取代**：页面改由 `web/` 前端工程构建（产物不入库），接口契约与 AC-018~021 不变。下方内容保留为 v0.8 当期记录；v0.9 的工程结构、门禁清单与 CI 变更另起一节（本节末尾之后）。
 
 **目标**：堵掉"库里写错了只能手工连 Qdrant"。本机审阅页浏览 + 条目人工编辑 + 软删除与恢复 + 留痕（PRD US-7 / FR-026~FR-030 / NFR-009~011 / AC-018~021）。逐题决策与理由见 `specs/001-learning-memory-rag/v08-decisions.md`。
 
@@ -228,6 +232,89 @@ B 族三个插件都要读 SQLite，而普通 `sqlite3.connect()` 会在源目�
 
 **Complexity Tracking（v0.8）**：无违宪项。唯一需要记录的取舍是"覆写层"引入的字段重叠（当前值 vs 原始值）——用 `original_text` 永久保留 + 详情页对照展示化解，不用新表。
 
+## v0.9 审阅页工程化（M12）
+
+**目标**：把审阅页从 v0.8 的"零构建单文件"换成**受限引入的前端工程**（ADR-21）。**接口契约、FR-026~FR-030、AC-018~AC-021 一行不改** —— 换的是"这层薄壳怎么造"。
+
+### 工程结构与状态分工
+
+```
+web/
+├── index.html            vite.config.ts        tailwind.config.ts
+├── package.json          pnpm-lock.yaml        tsconfig.json     eslint.config.js
+├── src/
+│   ├── api/              # 走同一份 fetch 封装；schema.d.ts 由 openapi.json 生成（**入库**）
+│   ├── queries/          # TanStack Query：列表/详情/编辑/软删/恢复
+│   ├── store/            # Zustand：只放 UI 状态（选中项、筛选条件、主题）
+│   ├── components/       # Table / DetailPanel / EditForm / Toast / ThemeToggle
+│   └── main.tsx
+├── tests/                # Vitest（组件与纯函数）
+└── e2e/                  # Playwright（AC-018~021 的 8 步）
+```
+
+- **状态分工写死**：服务端状态归 **TanStack Query**（缓存、失效、乐观更新、409 冲突），**Zustand 只放 UI 状态** —— 两套不许争同一份数据（ADR-21 决策 1）。
+- **产物 vs 类型，两条相反的规矩**：`web/dist/`（构建产物）**不入库**；`web/src/api/schema.d.ts`（由 `openapi.json` 生成的类型快照）**入库**，CI 重新生成并断言无 diff —— 前者是生成物、后者是契约快照，混为一谈就会出现"改字段忘一侧"的静默漂移。
+
+### 入口与产物落点
+
+| 入口 | 做什么 |
+|---|---|
+| `make ui` | `pnpm --dir web build` → `web/dist/`；**不自动跑在 serve 里**（保持 serve 快、职责单一） |
+| `make ui-dev` | `pnpm --dir web dev`（Vite dev server，`/types`、`/entries*`、`/ask*` 代理到 `127.0.0.1:8300`） |
+| `make serve` | 仍是唯一后端；`GET /` 返回 `web/dist/index.html`，`app.mount("/assets", StaticFiles(...))` 提供带 hash 的 JS/CSS；**不需要 SPA 兜底路由**（详情是 `#/entry/<id>` hash 路由） |
+| `dist` 缺失时 | `GET /` 明确返回 **503 + "先跑 `make ui`"**，绝不返回空白页 —— 静默的白屏是最难查的一类失败 |
+
+### 门禁清单（NFR-012 的落地）
+
+**进提交钩子**（`.pre-commit-config.yaml`，全部 `files: ^web/`、`language: system`，只在 `web/` 有改动时触发，Python-only 提交不受影响）：
+
+1. `eslint`（含**三条禁止规则**：禁 `qdrant-client` 一类客户端 import、禁读 `ARK_*`、禁 `node:fs` 写文件 —— 把"前端不是第二个后端"做成机械判据）
+2. `tsc --noEmit`
+3. `vitest run`
+
+**只进 CI**：`playwright test`（覆盖 AC-018~021 的 8 步；需 `playwright install --with-deps chromium`）。
+
+**`gate-selftest` 新增 4 类用例**（植入违规必须变红）：eslint（违规 import）、tsc（类型错误）、vitest（失败断言）、playwright（页面断言失败）。**实现约束**：临时仓库里要能**离线**装前端依赖（复用 pnpm 全局 store，同 Python 侧复用 uv 缓存的做法），否则"证明钩子会红"会变成每次联网；每个 JS 用例预计 +1~2 秒。
+
+**配套两条**：`size_guard` 扩到 `web/src/**/*.{ts,tsx}`（沿用同一套阈值：文件 ≤300 行、函数 ≤80 行）；README 的用例数**分列 Python / 前端**。
+
+**自动覆盖、无需改动的**：`secret_scan`（扫入库文件，天然覆盖 `web/`）。**前端没有变异测试**（Stryker 不列入本版）—— NFR-012 与 README 两处都要写明。
+
+### CI 变更（`.github/workflows/ci.yml`）
+
+现有 job 是"Python + Qdrant + 15 钩子 + gate-selftest"，v0.9 追加：
+1. `setup-node`（版本读 `mise.toml`，与 uv 同样的单一事实来源）；
+2. `pnpm install --frozen-lockfile`；
+3. `pnpm --dir web build`（顺带证明产物可构建）；
+4. `pnpm --dir web lint && tsc --noEmit && vitest run`；
+5. `playwright install --with-deps chromium` + `playwright test`；
+6. **类型快照断言**：重新生成 `schema.d.ts` 后 `git diff --exit-code`。
+
+### 设计要点（片 3 的内容，不是"换栈自动获得"）
+
+排版梯级与限宽、列表改真表格（粘性表头 + `tabular-nums`）、加载骨架/空态/错误态、Toast 取代 `prompt()`、`focus-visible` 焦点环、`aria-live`、`prefers-reduced-motion`、`prefers-color-scheme` 暗色 + 主题开关（**需要 Zustand 放主题状态**）、快捷键（j/k 上下、e 编辑、Esc 取消）。
+
+### 测试策略（v0.9）
+
+- **Vitest**：`effective` 视图映射、筛选参数拼装、409 冲突分支、乐观更新的回滚。
+- **Playwright**：开页面 → 筛选 → 详情 → 编辑保存 → 删除 → 勾"显示已删除" → 恢复 → `make sync` 重放后人工值仍在（就是 T105 那张表的自动化版，跑真后端 + 内嵌/本地 Qdrant）。
+- **后端侧不动**：`tests/unit/test_entries*.py`、`test_api_ui.py`、`test_api_writes.py`、`tests/integration/test_entries_replay.py` 原样保留 —— 它们是接口契约的守门人，前端换实现不该让它们变红。
+- **"断网可用"要扫**产物**，不只扫入口**：`GET /` 返回的那段 HTML 只是入口，Vite 产物还有 `assets/*.js|.css` —— 外部 CDN 引用最可能藏在 bundle 里。所以断言 MUST 扫**整个 `web/dist/**`**（禁 `http(s)://` 外部地址、协议相对地址、CDN 域名），并配一条 ESLint 规则禁"导入远程 URL"；CI 与契约测试两处都要跑（NFR-009 ③）。（来源：v0.9 analyze 的 HIGH finding —— 原来的断言只覆盖入口，等于把"断网可用"押在一句愿望上。）
+
+### Constitution Check（v0.9 复核）
+
+| 原则 | v0.9 的符合方式 | 状态 |
+|---|---|---|
+| I 单一事实来源 | NFR-009 改写 + NFR-012 新增都在 PRD；plan/tasks 逐条引用 | ✓ |
+| II 纯核薄壳 | 前端**不碰核心层**：只调 `src/api/app.py` 已登记端点；路由仍只做校验与转发 | ✓ |
+| III 配置驱动扩展 | 类型下拉仍来自 `GET /types`（配置驱动），前端不硬编码类型表 | ✓ |
+| IV 幂等与确定性 | 前端不参与 ID 生成与去重；人工覆写规则（NFR-011）不变 | ✓ |
+| V 写入边界（NON-NEGOTIABLE） | 前端**不写盘、不写库**（ESLint 三条禁止规则机械守）；`web/` 在 `src/` 之外，不受 `WRITE_SITES`/`DIRECTORIES` 管辖 —— 但因此**多了两条门禁**来补这块空白 | ✓ |
+| VI 技术克制与可逆 | 新增的唯一依赖是 Node 工具链（如实记代价）；仍**只有 Qdrant 一个常驻服务**；产物不入库、换框架不动后端 | ✓ |
+| VII 学习优先 | 三片纵切，每片可运行；ADR-21 记录了栈选择与三条被否备选 | ✓ |
+
+**Complexity Tracking（v0.9）**：新增一条"工具链复杂度"，如实登记为**已接受的代价**（门槛从 `.venv` 变成 `.venv + Node`、CI 变慢、前端无变异测试），并用"产物不入库 + 类型快照入库 + 两条新门禁"把它的风险面收窄。
+
 ## Module Contracts（摘要，全文见 contracts/plugin-contract.md）
 
 - `ark_client.embed(texts: list[str]) -> list[list[float]]`；`chat(messages, json_mode=False, max_tokens=None, thinking=True) -> str`
@@ -260,3 +347,6 @@ B 族三个插件都要读 SQLite，而普通 `sqlite3.connect()` 会在源目�
 | **v0.8**：人工编辑被同日重放冲掉 / 软删条目复活 | 覆写层与自动字段分离 + 检索期过滤，由 AC-019/AC-020 的自动化用例（真跑重放）钉住；这是本版最可能踩的坑 |
 | **v0.8**：无鉴权页面被浏览器里的其他页面驱动（跨站写请求） | 写接口校验 `Origin`/`Host` + 自定义头；页面只绑 `127.0.0.1`（NFR-010） |
 | **v0.8**：覆写让"库里显示的"不再等于"蒸馏产出的"，将来追溯对不上 | `original_text` 永久保留、详情页对照展示；检索上下文用当前值并带"已编辑"标记 |
+| **v0.9**：前端工具链抬高"跑起来"的门槛、拖慢 CI | NFR-009 已把"门槛从 `.venv` 变成 `.venv + Node`"登记为**已接受代价**；`make ui`（构建）与 `make ui-dev`（开发）分离，`make serve` **不自动 build**；`dist` 缺失时 `GET /` 返回 **503 + "先跑 `make ui`"**，不返回空白页 |
+| **v0.9**：改了后端字段忘改前端（或反之），且没有任何机械判据 | 类型由 `openapi.json` 生成、**快照入库**，CI 重新生成后 `git diff --exit-code`；前端类型错误由 `tsc --noEmit` 在提交钩子挡住 |
+| **v0.9**：`gate-selftest` 的前端用例因装不上依赖而变慢或**变瞎**（skip 掉） | 复用 pnpm 全局 store 离线安装（同 Python 侧复用 uv 缓存）；用例失败一律报红，**不允许 skip** —— "门禁自己瞎掉还全绿"是本仓库最怕的死法（gate-selftest 存在的理由） |

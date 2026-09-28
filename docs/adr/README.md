@@ -12,6 +12,7 @@ ADR-1…11 是**实施前**的决定，以三列摘要表的形式记在 [`PRD.m
   - [ADR-18 人工修正走**覆写层**](0018-entry-override-layer.md)（改正文不换 ID、不重算关联边）
   - [ADR-19 删除用**软删除 + 检索期过滤**](0019-soft-delete-by-filter.md)（不做硬删除、不级联删边）
   - [ADR-20 审阅页**零构建**且只绑本机](0020-zero-build-local-ui.md)（无 npm/CDN + 写接口同源校验）
+  - [ADR-21 审阅页改用**受限引入的前端工程**](0021-frontend-toolchain.md)（Vite + React + Zustand + Tailwind + TanStack Query；**取代 ADR-20 第 1 条**）
 - **另外三条**（`parallel_workers`、SQLite `mode=ro`、迁移判据用 ref 路径）信息量本来就是
   一行，**结论定了之后回 PRD §7 加一行摘要**，不单独建文件。
 

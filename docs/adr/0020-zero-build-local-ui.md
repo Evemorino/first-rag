@@ -1,6 +1,6 @@
 # ADR-20 审阅页**零构建**，且只绑本机（写接口加同源校验）
 
-- **状态**：Accepted（2026-09-28；用户授权按推荐值采用，记录见 `specs/001-learning-memory-rag/v08-decisions.md`）
+- **状态**：Accepted，**部分被取代**（2026-09-28；用户授权按推荐值采用，记录见 `specs/001-learning-memory-rag/v08-decisions.md`）。**第 1 条"零构建"由 [ADR-21](0021-frontend-toolchain.md) 取代**（页面改由 Vite + React 前端工程构建）；**第 2、3 条（只绑 `127.0.0.1`、写接口同源校验）继续有效** —— 那两条是安全边界，与用什么框架无关
 - **日期**：2026-09-28
 - **素材**：PRD v0.8.0 NFR-009 / NFR-010、§3.2 NG-002 撤销；spec FR-024
 - **实施位置**：`src/api/app.py`（`GET /` + 写接口的同源校验）、`src/api/ui/`（静态资源）
