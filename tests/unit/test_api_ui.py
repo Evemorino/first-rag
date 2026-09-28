@@ -23,7 +23,7 @@ import dist_external_url_check as dist_urls  # noqa: E402  (先补 sys.path 才�
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    return TestClient(app, base_url="http://127.0.0.1:8300")
 
 
 @pytest.fixture

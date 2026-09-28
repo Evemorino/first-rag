@@ -33,7 +33,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src import ask, config, entries as entries_module, log, sync
@@ -49,6 +49,39 @@ _WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
 
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 UI_HEADER = "first-rag-ui"
+
+
+def _local_host(host_header: str | None) -> bool:
+    """`Host` 是不是本机（可带端口；`[::1]:8300` 这种方括号形式也算）。"""
+    host = (host_header or "").rsplit(":", 1)[0].strip("[]")
+    return host in _LOCAL_HOSTS
+
+
+def _local_origin(origin: str | None) -> bool:
+    """`Origin`（若有）是不是本机。**缺 Origin 不算错** —— 同源 GET 本来就不带它。"""
+    return not origin or urlparse(origin).hostname in _LOCAL_HOSTS
+
+
+@app.middleware("http")
+async def enforce_loopback(request: Request, call_next):
+    """**所有**路由只接受本机 `Host` / 本机 `Origin`（NFR-010 的边界）。
+
+    为什么从"每个写路由挂 `Depends`"改成中间件：2026-09-28 的安全复核证明了前一种的后果 ——
+    `require_local` 只声明在三个写路由上，于是 `/types`、`/entries`、`/entries/{id}`、
+    `/ask`、`/ask/stream`、`/sync`、`/log` 一个闸都没有。攻击者页面只要把自己的域名解析到
+    `127.0.0.1`（DNS rebinding），浏览器就把它与本机端口当**同源**：没有 CORS 预检，
+    自定义头那道闸因此形同虚设，只剩下 `Host`/`Origin` 能区分"真页面"与"攻击者页面"。
+    实测后果是能读全库、触发 Ark 计费、往 `notes/inbox.md` 写东西（后者会被下次 sync
+    蒸馏进库）。中间件按路由表生效：**新增路由自动被覆盖**，不依赖谁记得加 `Depends`。
+
+    这里直接返回 `JSONResponse` 而不是抛 `HTTPException`：中间件在异常处理器**外层**，
+    抛出去会变成 500 而不是 403（FastAPI 的已知坑）。
+    """
+    if not _local_host(request.headers.get("host")) or not _local_origin(
+        request.headers.get("origin")
+    ):
+        return JSONResponse({"detail": "只接受本机请求"}, status_code=403)
+    return await call_next(request)
 
 _state_lock = threading.Lock()
 _sync_state: dict = {
@@ -292,20 +325,15 @@ def get_entry(entry_id: str) -> dict:
 
 
 def require_local(request: Request) -> None:
-    """写接口只接受"来自本机页面"的请求（NFR-010 / ADR-20）。
+    """写接口额外要求"来自本机页面"（NFR-010 / ADR-20）。
 
-    三道闸各挡一种情况：`Host` 非本机（有人把它挂到 `0.0.0.0` 时挡下）、
-    缺少自定义头（浏览器里别的页面发跨站请求时带不了它 —— 自定义头会触发预检，
-    而我们不回答 CORS）、`Origin` 非本机。无鉴权服务里，这三样就是全部防线。
+    `Host`/`Origin` 那两条已由 `enforce_loopback` 中间件**对所有路由**执行（2026-09-28 起），
+    所以这里只剩写接口独有的那一道：自定义头。它挡的是普通跨站请求 —— 自定义头会触发
+    预检，而我们不回答 CORS，所以浏览器发不出去；同源（含 DNS rebinding 后的同源）能伪造
+    这个头，那正是中间件管的事。两道互补，缺一不可。
     """
-    host = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]")
-    if host not in _LOCAL_HOSTS:
-        raise HTTPException(403, "只接受本机请求")
     if request.headers.get("x-requested-with") != UI_HEADER:
         raise HTTPException(403, f"缺少页面标识头（X-Requested-With: {UI_HEADER}）")
-    origin = request.headers.get("origin")
-    if origin and urlparse(origin).hostname not in _LOCAL_HOSTS:
-        raise HTTPException(403, "拒绝跨站来源")
 
 
 class EditBody(BaseModel):

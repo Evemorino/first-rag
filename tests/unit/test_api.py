@@ -20,7 +20,7 @@ from src.ask import Answer, Citation
 @pytest.fixture
 def client():
     _sync_state.update(running=False, started_at=None, last=None, error=None)
-    return TestClient(app)
+    return TestClient(app, base_url="http://127.0.0.1:8300")
 
 
 def test_health_reports_components(client, monkeypatch):

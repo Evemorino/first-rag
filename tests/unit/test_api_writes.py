@@ -15,7 +15,7 @@ LOCAL_HEADERS = {"host": "127.0.0.1:8300", "x-requested-with": "first-rag-ui"}
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    return TestClient(app, base_url="http://127.0.0.1:8300")
 
 
 @pytest.fixture
