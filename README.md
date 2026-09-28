@@ -244,7 +244,7 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   **这串数字是手写的，没有门禁盯着**——`make crap` 只保证"没有 crappy 函数"，
   不会因为你改了代码而告诉你 README 过期了（变异基线有 `baseline_check.py`，
   CRAP 没有对应的东西）。数字对不上时以 `make crap` 的输出为准。
-  用例数过去同样没人看着：**965 个（963 passed + 1 skipped，2026-09-28 实测
+  用例数过去同样没人看着：**974 个（963 passed + 1 skipped，2026-09-28 实测
   `pytest -q`）**——在本轮核对前它停在"844"上，正是这条"没有门禁"的后果。现在
   `make baseline` 会核对这一段的**收集数**（括号里那两个数是那天的实测快照；
   收集数一变就得重测一遍，把三个数一起改）。
@@ -260,8 +260,8 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   （ask / collect / distill）+ 蒸馏装箱（distill_batches，2026-09-24 随分批一起
   纳入；`secret_patterns` 不加 —— 它只有模块级正则常量、零个函数，生不出变异体），
   见 `pyproject.toml` 的 `only_mutate`。
-  当前基线：2420 个变异体
-  被杀死、374 个存活、19 个无测试覆盖，**变异分数 86.6%**。
+  当前基线：2450 个变异体
+  被杀死、344 个存活、19 个无测试覆盖，**变异分数 87.7%**。
 
   往 `only_mutate` 里加模块时要注意：mutmut 只跑已有 `.meta` 里待检查的变异体，
   **新加的文件不会自动 collect**（它连 `collect` 子命令都没有），加完必须
@@ -423,6 +423,21 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   **`entries` 那 34 条是本版新代码**：它们是"没有测试抓住"这一层的事实，但是
   "等价变异体（改了行为不变）"还是"真缺测试"，得逐条看过才算数 —— 另立 T111。
   跑完 `src/` 已核验还原（`git status` 干净）。
+  **T111 判决落地**：给这 34 只补了三组测试（视图契约整体断言 / 过滤器"键里的值
+  与边界"而不只是键名 / `configured_types` 的两种输入形状），清 stats 后**点名重跑**
+  （mutmut 跳过已有结果，不清就永远看不到新测试的效果）—— **30 只被杀掉**，
+  基线 86.6% → **87.7%**（存活 374 → 344）。剩下 4 只逐条判为**等价或不可达**，
+  理由如下（不是"还没测"，而是**任何**测试都杀不掉）：
+
+  - `entries.x__load_payload__mutmut_13`：`NotFoundError(None)` 只换异常里的 id，
+    而 API 层 404 的文案是写死的 —— 外部观察不到。
+  - `entries.x_edit_entry__mutmut_59` / `__76`：`or "XXXX"` 这类兜底只在"覆写正文
+    与原始正文**都**为空"时才生效，而 `ingest` 禁止空正文、`edit_entry` 也拒空串
+    —— 不可达。
+  - `entries.x_edit_entry__mutmut_70`：`payload.get(None) or payload.get("text")`
+    与 `payload.get("original_text") or …` 结果相同 —— 因为 `original_text` 正是
+    首次编辑时从 `text` 抄下来的，而 `text` 此后不再被改（这条不变量写在
+    `edit_entry` 里）。**不变量一旦被破坏，它会重新变成真信号。**
 
   **上面这些族计数由 `scripts/mutant_recheck.py --summary` 生成**（入库工具，不再是
   我一次性探针里的临时规则）：它读 `mutants/src/*.meta` 挑出存活变异体，从插桩副本里

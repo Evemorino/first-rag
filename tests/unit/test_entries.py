@@ -5,6 +5,7 @@
 读了能过、写了还没写，两边不能混着测。
 """
 
+from datetime import date
 from types import SimpleNamespace
 
 from qdrant_client.models import FieldCondition, IsEmptyCondition
@@ -300,3 +301,119 @@ def test_get_entry_neighbours_ignore_other_days():
 def test_visible_helper_matches_the_filter_semantics():
     assert entries.visible(make_payload()) is True
     assert entries.visible(make_payload(deleted_at="2026-09-28T12:00:00+00:00")) is False
+
+
+# --- T111：把"手工也杀不掉"的那批逐条判过之后补的覆盖 ---
+# 每条都对应 T110 判决里 `entries` 的一个真存活变异体，注释写明它钉的是什么。
+
+
+def test_view_contract_carries_every_field():
+    """整份视图契约（不是抽几个字段）—— 钉住 to_view 里每个 `payload.get(<键>)`。
+
+    T111 判决里 12 条真存活都是这类：把某个键改成 `payload.get(None)`、把
+    `related` 的 `or` 改成 `and`（永远返回 []）、把 `rev` 的兜底 0 改成 1……
+    没有一个测试整体看过返回值，所以它们都"没人抓"。
+    """
+    payload = make_payload(
+        source="codex",
+        distill_version="m+rubric@deadbeef",
+        related=["11111111-1111-1111-1111-111111111111"],
+        original_text="原文",
+        edited_at="2026-09-28T12:00:00+00:00",
+        deleted_reason="错了",
+        rev=3,
+    )
+    view = entries.to_view("abc", payload)
+
+    assert view == {
+        "id": "abc",
+        "text": "原始蒸馏正文",
+        "type": "error",
+        "tags": ["qdrant"],
+        "project": "first-rag",
+        "date": "2026-09-20",
+        "source": "codex",
+        "created_at": "2026-09-20T10:00:00+08:00",
+        "source_refs": ["session-a"],
+        "distill_version": "m+rubric@deadbeef",
+        "related": ["11111111-1111-1111-1111-111111111111"],
+        "original_text": "原文",
+        "edited": False,
+        "edited_at": "2026-09-28T12:00:00+00:00",
+        "deleted_at": None,
+        "deleted_reason": "错了",
+        "rev": 3,
+    }
+
+
+def test_view_defaults_are_zero_and_empty():
+    """没写过的字段要有稳定默认（`rev` 兜底 0、`related` 兜底 []）。"""
+    view = entries.to_view("abc", make_payload())
+    assert view["rev"] == 0
+    assert view["related"] == []
+
+
+# --- 过滤器：键里的值与边界（不只是"有哪些键"）---
+
+
+def test_build_filter_pins_match_values():
+    query = entries.build_filter(type="error", project="p", source="codex")
+    matches = {
+        c.key: c.match.value for c in query.must if isinstance(c, FieldCondition)
+    }
+    assert matches == {"type": "error", "project": "p", "source": "codex"}
+
+
+def test_build_filter_pins_both_date_bounds():
+    query = entries.build_filter(date_from="2026-09-01", date_to="2026-09-30")
+    condition = next(c for c in query.must if isinstance(c, FieldCondition))
+    # DatetimeRange 会把 ISO 串解析成 datetime，所以比日期部分。
+    assert condition.range.gte.date() == date(2026, 9, 1)
+    assert condition.range.lte.date() == date(2026, 9, 30)
+
+
+def test_build_filter_accepts_a_single_bound():
+    """只给一端也要生效 —— `or` 被改成 `and` 时这里会红。"""
+    only_from = next(
+        c for c in entries.build_filter(date_from="2026-09-01").must
+        if isinstance(c, FieldCondition)
+    )
+    only_to = next(
+        c for c in entries.build_filter(date_to="2026-09-30").must
+        if isinstance(c, FieldCondition)
+    )
+    assert only_from.range.gte.date() == date(2026, 9, 1)
+    assert only_from.range.lte is None
+    assert only_to.range.lte.date() == date(2026, 9, 30)
+    assert only_to.range.gte is None
+
+
+def test_list_entries_forwards_date_bounds():
+    fake = FakeQdrantClient([("a", make_payload())])
+    entries.list_entries(date_from="2026-09-01", date_to="2026-09-30", client=fake)
+    condition = next(
+        c for c in fake.scrolls[0]["scroll_filter"].must if isinstance(c, FieldCondition)
+    )
+    assert condition.range.gte.date() == date(2026, 9, 1)
+    assert condition.range.lte.date() == date(2026, 9, 30)
+
+
+def test_neighbors_pin_the_day_window():
+    fake = FakeQdrantClient([("abc", make_payload())])
+    entries.get_entry("abc", client=fake)
+    condition = next(
+        c for c in fake.scrolls[-1]["scroll_filter"].must if isinstance(c, FieldCondition)
+    )
+    assert condition.range.gte.date() == date(2026, 9, 20)
+    assert condition.range.lte.date() == date(2026, 9, 20)
+
+
+# --- 类型枚举：dict 与裸字符串两种形状 ---
+
+
+def test_configured_types_handles_dicts_and_bare_strings(monkeypatch):
+    monkeypatch.setattr(
+        entries.config, "load_schema",
+        lambda: {"types": [{"name": "error"}, "idea"]},
+    )
+    assert entries.configured_types() == ["error", "idea"]

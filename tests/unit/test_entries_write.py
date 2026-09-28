@@ -93,6 +93,8 @@ def test_edit_writes_override_and_trail(fake, embedded):
     view = entries.edit_entry("abc", rev=0, text="人工改过的正文", client=fake)
     stored = fake.points["abc"]
 
+    assert view["id"] == "abc"      # 返回值也要带对 id（T111 判决里的真存活）
+    assert view["rev"] == 1         # ……以及推进后的版本号
     assert stored["override"] == {"text": "人工改过的正文"}
     assert stored["original_text"] == "原始蒸馏正文"
     assert stored["edited_prev_text"] == "原始蒸馏正文"
@@ -160,6 +162,12 @@ def test_edit_can_clear_project(fake, embedded):
     assert entries.to_view("abc", fake.points["abc"])["project"] is None
 
 
+def test_edit_stores_a_real_project_value(fake, embedded):
+    """清空与写入是两条路：只测清空会让"永远写 None"的变异体活下来（T111）。"""
+    entries.edit_entry("abc", rev=0, project="  new-project  ", client=fake)
+    assert fake.points["abc"]["override"]["project"] == "new-project"
+
+
 def test_second_edit_keeps_first_original_text(fake, embedded):
     entries.edit_entry("abc", rev=0, text="第一版", client=fake)
     entries.edit_entry("abc", rev=1, text="第二版", client=fake)
@@ -179,6 +187,8 @@ def test_edit_missing_entry_raises_not_found(fake, embedded):
 
 def test_delete_marks_and_bumps_rev(fake):
     view = entries.delete_entry("abc", rev=0, reason="  蒸馏错了  ", client=fake)
+    assert view["id"] == "abc"
+    assert view["rev"] == 1
     assert fake.points["abc"]["deleted_at"] == "2026-09-28T12:00:00+00:00"
     assert fake.points["abc"]["deleted_reason"] == "蒸馏错了"
     assert fake.points["abc"]["rev"] == 1
@@ -201,6 +211,8 @@ def test_restore_removes_the_keys_and_bumps_rev(fake):
     entries.delete_entry("abc", rev=0, reason="错了", client=fake)
     view = entries.restore_entry("abc", rev=1, client=fake)
 
+    assert view["id"] == "abc"
+    assert view["rev"] == 2     # 返回的视图不能落后于库里写的版本
     assert "deleted_at" not in fake.points["abc"]
     assert "deleted_reason" not in fake.points["abc"]
     assert fake.points["abc"]["rev"] == 2

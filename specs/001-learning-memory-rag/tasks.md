@@ -353,7 +353,7 @@
 
 **—— 2026-09-28 判决落地后追加 ——**
 
-- [ ] T111 [US7] 逐条判定 v0.8 新代码的 34 只真存活变异体（`entries.py`）：「等价变异体」还是「真缺测试」，真缺口补测试 per T110 判决 / README「第五次跑批」（partial）——*T110 的 `--run` 确认这 34 条"没有任何测试响"（这是事实层），但**没判定性质**：改了行为不变（等价变异体，登记即可）与"这段行为压根没人测"（真缺口，要补测试）处置完全不同。仓库既有做法是先聚成主题再逐条判（README 里上一轮"17 条真缺口聚成三个主题"就是这么做出来的）。这一轮新代码里已知的候选主题：覆写层合并语义（`human_fields` / `effective` 的边界）、同日邻居导航（`_neighbors` 的边角）、可见性判据在检索侧的传播。*
+- [x] T111 [US7] 逐条判定 v0.8 新代码的 34 只真存活变异体（`entries.py`）：「等价变异体」还是「真缺测试」，真缺口补测试 per T110 判决 / README「第五次跑批」（partial）——*取 hunk 逐条看过（34 只的 diff 全部来自 recheck 自己的取 hunk 逻辑），聚成**三个真缺口主题** + **一类等价/不可达**。**真缺口 → 补了 9 条测试**：① **视图契约没人整体断言**（12 只：`to_view` 里某个键被改成 `payload.get(None)`、`related` 的 `or`→`and` 恒返回 []、`rev` 兜底 0→1、edit/delete/restore 返回的 `id`/`rev`）→ `test_view_contract_carries_every_field`（整份 dict 相等）+ 默认值 + 三处返回值的 id/rev 断言；② **过滤器只断言了"有哪些键"**（13 只：match value 被抹掉、range 上下界被丢、只给一端时 `or`→`and`）→ 四条断言（match value、两端边界、单端边界、list/`_neighbors` 的窗口）；③ **`configured_types` 没有直接单测**（2 只：dict 分支恒真 / 裸字符串走成 `str(None)`）→ 一条两种形状的单测。**等价或不可达 → 4 只，逐条给理由**：`NotFoundError(None)` 只换异常内 id 而 API 404 文案写死；两处 `or "XXXX"` 兜底要"覆写正文与原始正文都为空"才生效，而 ingest 禁空正文、edit 拒空串；`payload.get(None) or payload.get("text")` 与取 `original_text` 等价 —— 因为 `original_text` 就是首次编辑时从 `text` 抄的、`text` 此后不变（**不变量若被破坏它会重新变成真信号**，已写进 README）。**验证**：清 `mutmut-stats.json` 后点名重跑这 34 只（mutmut 跳过已有结果，不清就看不到新测试的效果）—— **30 只被杀**，基线 86.6% → **87.7%**（存活 374 → 344），用例 964 → 974；`pytest` 973 passed + 1 skipped，门禁全绿。*
 
 **Checkpoint 3（M11 完成）**: AC-018~021 全部有证据；NFR-009/010/011 各有一条机械或实测证据；★ 区（`similarity.py`）零改动。
 
