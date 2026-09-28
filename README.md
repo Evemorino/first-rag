@@ -45,6 +45,7 @@ outcome, learned}` 轻量转换直并入库，**不走 LLM 蒸馏**（重复蒸�
 uv sync                                # 项目内 .venv 装依赖
 cp .env.example .env                   # 填 ARK_API_KEY / EMBED_MODEL / CHAT_MODEL
 make up                                # 启动 Qdrant（localhost:6333）
+make down                              # 停掉 Qdrant（数据留在 ./data/qdrant/）
 make embed-test                        # 真调验证嵌入模型与维度并建集合（首次必跑）
 ```
 
@@ -74,6 +75,7 @@ make serve                             # 按需 API：/health /log /sync /sync/s
 
 ```sh
 make hooks        # = uv run pre-commit install
+make hooks-run    # 不提交，手动跑一遍全部钩子（排查或提交前自查）
 ```
 
 15 个钩子，按"从便宜到贵"排：大文件/冲突/JSON/YAML/AST → 行尾空白/文件末尾换行
@@ -227,7 +229,7 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
 ```
 
 - **CRAP** 把复杂度和覆盖率乘在一起：复杂度 23、覆盖 74% 的函数 CRAP 是 32.8，
-  一眼看出该拆还是该补测试。当前基线（2026-09-26，844 用例全绿）：函数内语句
+  一眼看出该拆还是该补测试。当前基线：函数内语句
   覆盖 90.7%（口径只算函数体内语句，与 pytest 报的全量行覆盖 92% 不是一回事），
   241 个函数，均值 4.9，最高 21.1，**0 个 crappy**（`config.py:_validate`
   按 section 拆成 6 个小函数；`collect._cap` / `redistill._fetch_day_entries` /
@@ -236,6 +238,10 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   **这串数字是手写的，没有门禁盯着**——`make crap` 只保证"没有 crappy 函数"，
   不会因为你改了代码而告诉你 README 过期了（变异基线有 `baseline_check.py`，
   CRAP 没有对应的东西）。数字对不上时以 `make crap` 的输出为准。
+  用例数过去同样没人看着：**893 个（892 passed + 1 skipped，2026-09-28 实测
+  `pytest -q`）**——在本轮核对前它停在"844"上，正是这条"没有门禁"的后果。现在
+  `make baseline` 会核对这一段的**收集数**（括号里那两个数是那天的实测快照；
+  收集数一变就得重测一遍，把三个数一起改）。
 - **孤儿模块**（`scripts/orphan_check.py`）补的是 CRAP 的盲区：CRAP 问的是
   "复杂的代码测够了吗"，问不了"这个模块有人碰过吗"。一个只有简单函数
   （复杂度 1）的模块，哪怕零测试，CRAP 也只有 1×(1-0)³+1 = **2** —— 离 30
@@ -491,6 +497,7 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   （`scripts/baseline_check.py`）。只想查不想重跑时用 `make baseline`，它还会
   列出比上次跑批还新的 `src/`、`tests/` 文件 —— 那才是基线真正开始说谎的时刻
   （踩过一次：把 `distill.py` 从 417 行拆到 241 行，分数没变，但没人能事先知道）。
+  核对通过之后要改文档，用 `make baseline-update` 一次写回，别手抄。
 
 CRAP 与孤儿检查都依赖 coverage 数据，所以顺序是 `cov → crap / orphans / mutation`。
 

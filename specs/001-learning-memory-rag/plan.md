@@ -1,6 +1,6 @@
 # Implementation Plan: first-rag v0.1
 
-**Branch**: N/A（项目未 git init，见 spec Assumptions） | **Date**: 2026-09-18 | **Spec**: [spec.md](spec.md)
+**Branch**: N/A（单特性、未按特性建分支；项目已于 2026-09-20 `git init`，见 spec Assumptions） | **Date**: 2026-09-18 | **Spec**: [spec.md](spec.md)
 
 **Input**: PRD.md **v0.7**（唯一需求事实来源；v0.1 范围已实现完毕，v0.7 扩采集面，见 PRD §13）；本文件所有需求引用均带 PRD 编号。
 

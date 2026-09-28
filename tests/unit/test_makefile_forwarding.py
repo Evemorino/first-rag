@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import re
 import shlex
 from pathlib import Path
 
@@ -21,6 +22,20 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MAKEFILE = REPO_ROOT / "Makefile"
 README = REPO_ROOT / "README.md"
+AGENTS = REPO_ROOT / "AGENTS.md"
+
+# 目标 → 为什么它可以不出现在 README / AGENTS.md 里。
+# 判据不是"重要不重要"，而是"人会不会主动去敲它"：给人敲的入口要写进文档，
+# 参数变体、内部件、一次性工具不必（写进去反而诱导重跑），但理由要留在这里。
+# 与 write_boundary 的写入点登记同构：**没登记就红**，兜底是拒绝而不是放行。
+INTERNAL_TARGETS = {
+    "crap-observe": "`crap` 的观察模式（--observe --top 20），排查时才用",
+    "migrate-trae": "一次性存量迁移（语义已在 AC-016 写清），列进文档会诱导重跑",
+    "orphans-top": "`orphans` 的 --top 10 变体",
+    "schema-check": "单文件校验助手（要 `F=` 参数），给改 schema 的流程用，不是日常入口",
+}
+
+MAKE_MENTION_RE = re.compile(r"\bmake\s+([a-z][a-z0-9-]*)")
 
 # 目标 → README 里写明可用的参数变量名。加目标时两边一起加。
 FORWARDED = {
@@ -53,7 +68,8 @@ def _recipes(text: str) -> dict[str, str]:
         if not line or line.lstrip().startswith("#"):
             continue
         head = line.split(":", 1)[0].strip() if ":" in line else ""
-        if head and " " not in head and "=" not in head:
+        # 点开头的行（.PHONY 之类的特殊目标）不是常规目标，别当成一个来数。
+        if head and not head.startswith(".") and " " not in head and "=" not in head:
             current = head
             recipes.setdefault(current, "")
     return recipes
@@ -68,6 +84,33 @@ def test_parser_finds_the_real_targets(recipes):
     """先检查检查器自己：解析器瞎了的话，下面那些断言会变成空转。"""
     assert len(recipes) >= 20
     assert {"up", "sync", "ask", "log", "serve"} <= set(recipes)
+    assert ".PHONY" not in recipes
+
+
+def test_every_target_is_documented_or_registered_as_internal(recipes):
+    """每个目标要么写进 README / AGENTS.md，要么在 INTERNAL_TARGETS 里登记理由。
+
+    为什么需要它：这一跳一直没人管，实测漏了 **7 个**——`down`（`up` 的反操作）、
+    `hooks-run`、`baseline-update`，以及 `schema-check` / `migrate-trae` /
+    `crap-observe` / `orphans-top`。`down` 这种一眼就该在文档里的都能漏整整一周，
+    说明"靠人记得"不成立；判据必须是机械的，跟 `lint_layers` 的目录登记一个路子。
+    """
+    documented = {
+        match.group(1)
+        for text in (
+            README.read_text(encoding="utf-8"),
+            AGENTS.read_text(encoding="utf-8"),
+        )
+        for match in MAKE_MENTION_RE.finditer(text)
+    }
+    undocumented = sorted(set(recipes) - documented - set(INTERNAL_TARGETS))
+    assert not undocumented, (
+        f"这些目标既没写进 README/AGENTS.md，也没在 INTERNAL_TARGETS 里登记理由："
+        f"{undocumented}"
+    )
+    # 登记表自己也要维护：指着不存在的目标，说明写它的人看的是旧 Makefile。
+    stale = sorted(set(INTERNAL_TARGETS) - set(recipes))
+    assert not stale, f"INTERNAL_TARGETS 里有已不存在的目标：{stale}"
 
 
 @pytest.mark.parametrize("target,flags", sorted(FORWARDED.items()))

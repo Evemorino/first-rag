@@ -166,6 +166,63 @@ def test_update_refuses_ambiguous_doc(tmp_path):
     assert str(excinfo.value) == "在 {} 里找到 2 处基线，期望恰好 1 处，未改动".format(doc)
 
 
+# --- 用例数：与变异分数同一类"写进文档就会腐烂"的数字 ---
+# 它不是跑出来的而是数出来的，所以核对成本只有一次 --collect-only。门禁只管收集数，
+# passed/skipped 是那天的实测快照 —— 收集数一变，三个数要一起重测。
+
+TEST_COUNT_SENTENCE = (
+    "  用例数过去同样没人看着：**886 个（885 passed + 1 skipped，2026-09-28 实测\n"
+    "  `pytest -q`）**——在本轮核对前它停在\"844\"上。\n"
+)
+
+
+def test_parse_test_count_reads_the_anchor(tmp_path):
+    doc = make_doc(tmp_path, BASELINE_SENTENCE + TEST_COUNT_SENTENCE)
+    assert baseline_check.parse_test_count(doc) == 886
+
+
+def test_parse_test_count_without_anchor(tmp_path):
+    """没有这句就返回 None，调用方据此跳过 —— 不谎报一个数字。"""
+    assert baseline_check.parse_test_count(make_doc(tmp_path)) is None
+
+
+def test_readme_has_the_test_count_anchor():
+    """真 README 里必须还留着这个锚点。
+
+    锚点被改写时 parse_test_count 返回 None、核对静默跳过 —— 那正是"检查器瞎了
+    还全绿"的老毛病，所以这条守在真文档上。
+    """
+    real_readme = Path(__file__).resolve().parents[2] / "README.md"
+    assert baseline_check.parse_test_count(real_readme) is not None
+
+
+def test_main_flags_stale_test_count(tmp_path, capsys, monkeypatch):
+    doc = make_doc(tmp_path, BASELINE_SENTENCE + TEST_COUNT_SENTENCE)
+    mutants = make_mutants(tmp_path, {"ids": [1] * 383 + [0] * 71 + [33] * 5})
+    monkeypatch.setattr(baseline_check, "collected_test_count", lambda *a, **k: 887)
+    assert baseline_check.main(["--doc", str(doc), "--mutants", str(mutants)]) == 1
+    assert "用例数已过期：写着 886，实际 887" in capsys.readouterr().out
+
+
+def test_main_accepts_matching_test_count(tmp_path, capsys, monkeypatch):
+    doc = make_doc(tmp_path, BASELINE_SENTENCE + TEST_COUNT_SENTENCE)
+    mutants = make_mutants(tmp_path, {"ids": [1] * 383 + [0] * 71 + [33] * 5})
+    monkeypatch.setattr(baseline_check, "collected_test_count", lambda *a, **k: 886)
+    assert baseline_check.main(["--doc", str(doc), "--mutants", str(mutants)]) == 0
+    assert "用例数一致（886）" in capsys.readouterr().out
+
+
+def test_update_writes_the_test_count_too(tmp_path, monkeypatch):
+    doc = make_doc(tmp_path, BASELINE_SENTENCE + TEST_COUNT_SENTENCE)
+    mutants = make_mutants(tmp_path, {"ids": [1] * 383 + [0] * 71 + [33] * 5})
+    monkeypatch.setattr(baseline_check, "collected_test_count", lambda *a, **k: 887)
+    assert baseline_check.main(["--doc", str(doc), "--mutants", str(mutants), "--update"]) == 0
+    text = doc.read_text(encoding="utf-8")
+    # 只换数字：排版与括号里的实测快照原样保留，人工再去核那两口数字。
+    assert "**887 个（885 passed + 1 skipped" in text
+    assert "886" not in text
+
+
 # --- 「整个函数没有测试映射」的登记表 ---
 # 这一条查的不是分数，是"变异体压根没被判过"这件事。见 KNOWN_NO_TESTS 上方。
 

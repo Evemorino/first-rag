@@ -15,6 +15,11 @@ README 里的 84.4% 是拆之前的数，没人发现）。
      并把"应该写成什么"直接打出来。
   3. 找"整个函数的变异体都被判 no tests"的函数，核对 ``KNOWN_NO_TESTS``
      登记表 —— 不在表里的退出码 1（查这个的理由见 ``KNOWN_NO_TESTS`` 上方）。
+  4. 核对 README 里那句**用例数**。它是同一类"写进文档就会腐烂"的数字，
+     但来源不同：不跑用例、只 ``pytest --collect-only`` 数一遍（约 1 秒）。
+     锚点（``TEST_COUNT_RE``）失效时返回 None 并跳过，由
+     ``tests/unit/test_baseline_check.py::test_readme_has_the_test_count_anchor``
+     盯着 —— 免得锚点一改，这里静默放行。
 
 外加一条过期提醒：源码或测试比 meta 还新，说明上次跑批之后又动过代码，
 即便数字暂时没变，也该重跑。
@@ -35,6 +40,7 @@ import glob
 import json
 import os
 import re
+import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
@@ -160,6 +166,11 @@ DOC_RE = re.compile(
     re.S,
 )
 
+# README 里那句"用例数"：`用例数…：**886 个（885 passed + 1 skipped，…）**`。
+# 门禁只管**收集数**（886）—— passed/skipped 是那天的实测快照，收集数一变就得
+# 重测一遍把三个数一起改，否则那句里剩下的两个数会开始说谎。
+TEST_COUNT_RE = re.compile(r"(?P<prefix>用例数[^\n]*?\*\*)(?P<count>\d+)")
+
 
 class Counts:
     """一次跑批的结果。score 只算有测试覆盖的变异体，与 mutmut 一致。"""
@@ -233,6 +244,34 @@ def parse_doc(doc_path: Path = DEFAULT_DOC) -> Counts | None:
     )
 
 
+def collected_test_count(repo_root: Path = REPO_ROOT) -> int | None:
+    """数一遍当前能收集到多少用例。只收集、不执行（约 1 秒）。"""
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+    match = re.search(r"(\d+) tests? collected", proc.stdout + proc.stderr)
+    return int(match.group(1)) if match else None
+
+
+def parse_test_count(doc_path: Path = DEFAULT_DOC) -> int | None:
+    """从文档里抓出记录的用例数。没写这句（或改了写法）就返回 None。"""
+    match = TEST_COUNT_RE.search(doc_path.read_text(encoding="utf-8"))
+    return int(match.group("count")) if match else None
+
+
+def update_test_count(count: int, doc_path: Path = DEFAULT_DOC) -> str:
+    """把文档里的用例数改成实际值，返回替换后的片段（供打印）。"""
+    text = doc_path.read_text(encoding="utf-8")
+    new_text, n = TEST_COUNT_RE.subn(lambda m: f"{m.group('prefix')}{count}", text)
+    if n != 1:
+        raise SystemExit(f"在 {doc_path} 里找到 {n} 处用例数锚点，期望恰好 1 处，未改动")
+    doc_path.write_text(new_text, encoding="utf-8")
+    return f"用例数 {count}"
+
+
 def update_doc(counts: Counts, doc_path: Path = DEFAULT_DOC) -> str:
     """把文档里的基线数字改成实际值，返回替换后的那句话（供打印）。"""
     text = doc_path.read_text(encoding="utf-8")
@@ -283,6 +322,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"没有找到 {args.mutants}/src/*.meta，跳过核对（先跑 make mutation）")
         return 0
 
+    # 用例数只在这句话存在时才去数：夹具文档里没有这句，测试因此不用等一次收集。
+    recorded_tests = parse_test_count(args.doc)
+    actual_tests = collected_test_count() if recorded_tests is not None else None
+    tests_ok = (
+        recorded_tests is None or actual_tests is None or recorded_tests == actual_tests
+    )
+
     if args.update:
         offenders = unregistered_no_tests(args.mutants)
         unrecognised = unrecognised_mutants(args.mutants)
@@ -296,6 +342,12 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         sentence = update_doc(actual, args.doc)
         print(f"已把 {args.doc.name} 的基线更新为：{sentence}")
+        if (
+            recorded_tests is not None
+            and actual_tests is not None
+            and recorded_tests != actual_tests
+        ):
+            print(f"已把 {args.doc.name} 的{update_test_count(actual_tests, args.doc)}")
         return 0
 
     recorded = parse_doc(args.doc)
@@ -315,12 +367,16 @@ def main(argv: list[str] | None = None) -> int:
                     "stale_sources": newer,
                     "no_tests_only_unregistered": unregistered,
                     "unrecognised_mutants": unrecognised,
+                    "test_count": {
+                        "recorded": recorded_tests,
+                        "actual": actual_tests,
+                    },
                 },
                 ensure_ascii=False,
             )
         )
         return 0 if (
-            recorded == actual and not unregistered and not unrecognised
+            recorded == actual and tests_ok and not unregistered and not unrecognised
         ) else 1
 
     print(f"实际（mutants/）：{actual}")
@@ -367,8 +423,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"    {name}")
         if len(newer) > 10:
             print(f"    …还有 {len(newer) - 10} 个")
+    if recorded_tests is not None:
+        if actual_tests is None:
+            print("\n⚠ 没数出当前用例数（`pytest --collect-only` 没给结果），这一条跳过")
+        elif recorded_tests == actual_tests:
+            print(f"\n✓ 用例数一致（{actual_tests}）")
+        else:
+            print(
+                f"\n✗ 文档里的用例数已过期：写着 {recorded_tests}，实际 {actual_tests}"
+            )
+            print("  改法：python scripts/baseline_check.py --update")
     return 0 if (
-        recorded == actual and not unregistered and not unrecognised
+        recorded == actual and tests_ok and not unregistered and not unrecognised
     ) else 1
 
 

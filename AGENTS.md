@@ -29,6 +29,7 @@ make 可用时的入口：
 
 ```sh
 make up            # 启动 Qdrant（唯一常驻容器）
+make down          # 停掉 Qdrant（up 的反操作；数据留在 ./data/qdrant/，备份=复制 data/）
 make embed-test    # 首次：真调 Ark 验证嵌入模型与维度，建集合
 make sync          # 当日采集→蒸馏→入库（幂等，可重复跑）
 make sync D=2026-09-18   # 补跑历史日期（AC-009）
@@ -50,8 +51,10 @@ make boundary      # 写入边界：产品源目录只读 + src/ 写入点必须
 make mutation-selfcheck  # 已知必死改动的自检：抓不住就别信变异分数
 make mutation      # 变异测试（mutmut），默认只打核心链路（内部先跑自检，末尾核对文档基线）
 make baseline      # 只核对不重跑：README 里的分数还准不准 + 哪些文件比上次跑批新
+make baseline-update  # 认可复核结果后，把真实数字写回 README 的基线那句话
 make recheck       # 分族统计存活变异体（mutmut 之外的另一个 oracle；--run 才改源码）
 make hooks         # 装 pre-commit：每次 commit 自动跑 15 个钩子（CI 上还有一层）
+make hooks-run     # 不提交，手动跑一遍全部钩子（排查或提交前自查）
 make gate-selftest # 门禁自检：给每个钩子植入违规，看它到底红不红（约 10 秒）
 make rerun-overlap [D=2026-09-24] [ARGS="--threshold 0.80"]  # 只读：同日重跑重叠度（FR-007 待澄清项的实测）
 ```

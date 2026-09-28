@@ -2,6 +2,10 @@
 # without manual activation (uv is pinned in mise.toml).
 # --no-sync：依赖本来就是常驻的，不带它时每条命令都会重建一遍 editable 包，
 # 又慢又在某些环境里失败（pre-commit 的钩子也是同样处理）。
+#
+# 目标的分工：给人敲的入口写进 README / AGENTS.md；参数变体、内部件、
+# 一次性工具不必进文档，但**必须在 tests/unit/test_makefile_forwarding.py 的
+# INTERNAL_TARGETS 里登记理由**（那条测试要求每个目标二选一，兜底是拒绝）。
 PY = uv run --no-sync python
 
 .PHONY: up down serve sync ask log scope embed-test test redistill
