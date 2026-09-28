@@ -1,3 +1,6 @@
 [tools]
 python = "3.13"
 uv = "0.12.5"
+# v0.9：前端工具链的版本与 uv 一样钉在这里（NFR-009 第 ① 条）。
+# 包管理器由 package.json 的 packageManager 字段钉住（corepack 交给它）。
+node = "24"

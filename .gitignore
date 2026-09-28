@@ -27,3 +27,15 @@ mutants/
 
 # macOS
 .DS_Store
+
+# 前端工程（v0.9）：依赖与**构建产物**都不入库（与 .venv / coverage.xml 同规矩）；
+# 类型快照 src/api/schema.d.ts 相反 —— 它入库（那是契约，见 ADR-21 决策 8）。
+web/node_modules/
+web/dist/
+# Playwright 的产物（失败截图/追踪/上次运行标记）：本地产物，不入库。
+web/test-results/
+web/playwright-report/
+# pnpm 在某些环境会在仓库内落一个本地 store 存根；依赖缓存不该进版本库。
+.pnpm-store/
+# 由 `make ui-types` 生成、只作为 openapi-typescript 的输入；类型快照才是入库的那份。
+web/openapi.json

@@ -7,7 +7,8 @@
                      防 cron 与 API 并发，F2）；GET /sync/status 查进度
 - GET  /ask          检索问答（与 CLI 共用 src.ask.query）
 - GET  /ask/stream   同上但 SSE 流式（共用 src.ask.query_stream）
-- GET  /             本机审阅页（静态单页，FR-026 / NFR-009）
+- GET  /             本机审阅页（由 web/ 前端工程构建，读 web/dist/index.html；FR-026 / NFR-009）
+- GET  /assets/*     构建产物里的静态资源（带 hash 的 JS/CSS）
 - GET  /types        配置里的类型枚举（供页面筛选与编辑下拉，FR-016）
 - GET  /entries      条目列表（过滤 + 分页，默认隐藏软删条目）
 - GET  /entries/{id} 条目详情（生效值 + 原始正文 + 留痕 + 关联边）
@@ -32,7 +33,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src import ask, config, entries as entries_module, log, sync
@@ -41,7 +42,9 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="first-rag", version="0.1.0")
 
-_UI_INDEX = Path(__file__).resolve().parent / "ui" / "index.html"
+# v0.9：页面由 `web/` 前端工程构建，产物不入库（ADR-21）。
+# 路径在**每次请求时**读这个模块变量 —— 测试靠 monkeypatch 它来构造"有产物/没产物"两种现场。
+_WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
 
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 UI_HEADER = "first-rag-ui"
@@ -217,8 +220,33 @@ def get_ask_stream(
 
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
-    """审阅页（FR-026）：随仓库走的静态单页，零构建、无外部依赖（NFR-009）。"""
-    return _UI_INDEX.read_text(encoding="utf-8")
+    """审阅页（FR-026）：返回前端工程的构建产物入口。
+
+    产物缺失时给 **503 + 明确的下一步**，而不是空白页 —— 白屏是最难查的一类失败。
+    """
+    entry = _WEB_DIST / "index.html"
+    if not entry.is_file():
+        raise HTTPException(
+            503,
+            "前端产物缺失：请在仓库根跑 `make ui`（它会构建 web/dist）后再打开本页",
+        )
+    return entry.read_text(encoding="utf-8")
+
+
+@app.get("/assets/{path:path}")
+def asset(path: str) -> FileResponse:
+    """构建产物的静态资源（Vite 生成 `assets/<name>-<hash>.js|css`）。
+
+    用显式路由而不是 `app.mount(StaticFiles(...))`：mount 在 import 时就固定住目录，
+    而 `GET /` 是按请求读 `_WEB_DIST` —— 两者一旦指向不同目录，测试抓不到、
+    线上表现为"页面能开、资源 404"。同一个变量驱动，才谈得上一致。
+    带路径逃逸守卫：`..` 一律 404。
+    """
+    base = (_WEB_DIST / "assets").resolve()
+    target = (base / path).resolve()
+    if not target.is_relative_to(base) or not target.is_file():
+        raise HTTPException(404, "资源不存在")
+    return FileResponse(target)
 
 
 @app.get("/types")

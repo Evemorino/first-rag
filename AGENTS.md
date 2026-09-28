@@ -43,6 +43,9 @@ make redistill D=2026-09-18 APPLY=1  # 确认后整组替换
 make serve         # FastAPI 薄壳（:8300：health/log/sync/sync-status/ask/ask-stream）
                    #   + 审阅页（v0.8）：GET / 、/types 、/entries 、/entries/{id}
                    #     写接口（本机 + X-Requested-With）：PATCH /entries/{id}、POST .../delete|restore
+make ui            # 构建审阅页前端产物（web/，v0.9 起；产物不入库，由 serve 读盘提供）
+make ui-dev        # 前端开发服务器（Vite HMR；/entries 等代理到 :8300）
+make ui-types      # 由 openapi.json 重新生成 TS 类型快照（web/src/api/schema.d.ts，入库）
 make test          # pytest（unit + integration）
 make cov           # 行覆盖率 → coverage.xml
 make crap          # CRAP 指标（复杂度 × 未覆盖度），≥30 视为 crappy
@@ -88,7 +91,8 @@ src/
                    #           workbuddy_ai / trae / trae_work_cn
                    # SQLite 族：opencode / zcode / hermes（一律 mode=ro，见 README 隐私节）
   api/app.py       # FastAPI 薄壳（路由只做校验与调用）
-  api/ui/index.html# 审阅页：零构建单页（无 CDN），由 GET / 返回（v0.8）
+web/               # 审阅页前端工程（v0.9，ADR-21）：Vite+React+TS+Zustand+Tailwind+TanStack Query
+  src/ tests/ e2e/ # 组件 / Vitest / Playwright；产物 dist/ 与 openapi.json 不入库，schema.d.ts 入库
   entries.py       # 条目审阅/修正：生效值、列表详情、人工覆写与软删（v0.8）
 scripts/crap.py    # CRAP 计算器：radon 复杂度 × coverage 覆盖率
 scripts/orphan_check.py  # 孤儿模块：找出零覆盖的 src/ 模块（CRAP 抓不到）

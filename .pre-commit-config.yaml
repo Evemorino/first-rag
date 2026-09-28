@@ -15,7 +15,10 @@ repos:
         args: ["--maxkb=512"]
       - id: check-merge-conflict
       - id: check-json
+      # pnpm 的 lockfile 是**多文档** YAML（每段之间一条 `---`），而 check-yaml 默认
+      # 只吃单文档 —— 不加这条 exclude，v0.9 之后所有人提交都会被它拦下（真踩过）。
       - id: check-yaml
+        exclude: ^web/pnpm-lock\.yaml$
       - id: check-ast
       - id: end-of-file-fixer
       - id: trailing-whitespace

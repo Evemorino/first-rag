@@ -28,6 +28,7 @@ from radon.complexity import cc_visit
 from radon.raw import analyze
 
 SOURCE_ROOT = Path("src")
+WEB_SOURCE_ROOT = Path("web/src")  # v0.9：前端也守同一条规模线（函数长度交给 eslint）
 DEFAULT_MAX_FILE_SLOC = 300
 DEFAULT_MAX_FUNC_LINES = 80
 
@@ -37,14 +38,25 @@ def collect(root: Path) -> tuple[list[tuple[int, str]], list[tuple[int, str, int
     files: list[tuple[int, str]] = []
     funcs: list[tuple[int, str, int]] = []
 
-    for path in sorted(root.rglob("*.py")):
+    patterns = ("*.py",) if root == SOURCE_ROOT else ("*.ts", "*.tsx")
+    for path in sorted(p for pattern in patterns for p in root.rglob(pattern)):
         if "__pycache__" in path.parts:
+            continue
+        # 生成文件不按源码量：`schema.d.ts` 由 openapi-typescript 产出（777 行是
+        # 后端接口形状决定的，拆不了也不该拆）。eslint 侧同样 ignore 它。
+        if path.name == "schema.d.ts":
             continue
         rel = path.as_posix()
         source = path.read_text(encoding="utf-8")
-        files.append((analyze(source).sloc, rel))
-        for func in cc_visit(source):
-            funcs.append((func.endline - func.lineno + 1, rel, func.name))
+        # 前端只量文件长度：函数长度由 eslint 的 max-lines-per-function 在钩子里守
+        # （Python 侧用 radon；不给 TS 再引一个 AST 依赖）。函数表对非 Python 为空。
+        if path.suffix == ".py":
+            files.append((analyze(source).sloc, rel))
+        else:
+            files.append((len([line for line in source.splitlines() if line.strip()]), rel))
+        if path.suffix == ".py":
+            for func in cc_visit(source):
+                funcs.append((func.endline - func.lineno + 1, rel, func.name))
 
     files.sort(reverse=True)
     funcs.sort(reverse=True)
@@ -62,6 +74,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     files, funcs = collect(SOURCE_ROOT)
+    # v0.9：前端源码也进这条门禁（同一套文件长度阈值）。
+    if WEB_SOURCE_ROOT.is_dir():
+        web_files, _ = collect(WEB_SOURCE_ROOT)
+        files = sorted(files + web_files, reverse=True)
 
     if args.top:
         print(f"文件 SLOC（前 {args.top}）：")

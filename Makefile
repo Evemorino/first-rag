@@ -14,6 +14,7 @@ PY = uv run --no-sync python
 .PHONY: layers layers-list size size-top boundary boundary-list gate-selftest
 .PHONY: schema-check migrate-trae rerun-overlap batch-edges probe
 .PHONY: hooks hooks-run
+.PHONY: ui ui-dev ui-types
 
 # Infrastructure: the only container is Qdrant (PRD §6, constitution VI)
 up:
@@ -59,6 +60,18 @@ redistill:
 # --- On-demand API shell (ADR-4: not a daemon) ---
 serve:
 	uv run uvicorn src.api.app:app --port 8300
+
+# --- v0.9 前端工程（ADR-21 / NFR-009）：产物不入库，serve 只读盘 ---
+# ui 里带 install：第一次跑的人不必先记住另一条命令；有 lockfile 时它很快。
+ui:
+	cd web && pnpm install --frozen-lockfile && pnpm build
+
+ui-dev:
+	cd web && pnpm dev
+
+ui-types:
+	uv run --no-sync python -c "import json; from src.api.app import app; print(json.dumps(app.openapi(), ensure_ascii=False, indent=2))" > web/openapi.json
+	cd web && pnpm types
 
 test:
 	uv run pytest

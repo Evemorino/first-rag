@@ -69,3 +69,45 @@ jobs:
 
       - name: 门禁自检 —— 植入违规，证明每个钩子还会红
         run: uv run python scripts/gate_selftest.py
+
+      # --- v0.9 前端（ADR-21 / NFR-012）：产物不入库，所以 CI 必须能从头构建并跑通 ---
+      #
+      # Node 版本从 mise.toml 读，**不在 CI 里另抄一份** —— 这个文件踩过：最初写的
+      # `pip install uv==<当时 mise.toml 里的值>` 在 mise.toml 升级后 13 秒即红。
+      - name: 读 Node 版本（mise.toml 是唯一事实来源）
+        id: node-version
+        run: |
+          echo "version=$(python3 -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('mise.toml').read_text())['tools']['node'])")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5
+        with:
+          node-version: ${{ steps.node-version.outputs.version }}
+
+      # pnpm 版本同样不在这里写死：action 会读 web/package.json 的 packageManager 字段。
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1  # v4
+        with:
+          package_json_file: web/package.json
+
+      - name: 前端依赖（lockfile 冻结）
+        run: pnpm --dir web install --frozen-lockfile
+
+      - name: 前端构建（顺带证明产物能从零构建出来）
+        run: pnpm --dir web build
+
+      - name: 前端三门（lint / 类型 / 单测）
+        run: |
+          pnpm --dir web lint
+          pnpm --dir web typecheck
+          pnpm --dir web test
+
+      - name: Playwright 浏览器内核
+        run: pnpm --dir web exec playwright install --with-deps chromium
+
+      # 8 步验收要真后端 + 真 Qdrant（上面已经起过），Playwright 的 webServer 会自己拉 uvicorn。
+      - name: 8 步验收（AC-018~021）
+        run: pnpm --dir web e2e
+
+      - name: 类型快照必须与 openapi.json 一致（防字段两侧漂移）
+        run: |
+          make ui-types
+          git diff --exit-code -- web/src/api/schema.d.ts

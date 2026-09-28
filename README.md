@@ -66,6 +66,9 @@ make serve                             # 按需 API + 审阅页：/health /log /
                                        #   审阅页 GET /（浏览器打开 localhost:8300）
                                        #   读 GET /types /entries /entries/{id}
                                        #   写 PATCH /entries/{id}、POST /entries/{id}/delete|restore
+make ui                                # 构建审阅页前端产物（web/dist；v0.9 起页面由 web/ 工程构建）
+make ui-dev                            # 前端开发服务器（Vite HMR，代理 /entries 等到 :8300）
+make ui-types                          # 由 openapi.json 重新生成 TS 类型快照（web/src/api/schema.d.ts）
 ```
 
 > `ask` 的额外参数**必须经 `ARGS=` 传**（`ARGS="--type error --since 7d"`）：配方只转发
@@ -237,17 +240,20 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
 - **CRAP** 把复杂度和覆盖率乘在一起：复杂度 23、覆盖 74% 的函数 CRAP 是 32.8，
   一眼看出该拆还是该补测试。当前基线：函数内语句
   覆盖 91.2%（口径只算函数体内语句，与 pytest 报的全量行覆盖不是一回事），
-  272 个函数，均值 4.8，最高 21.1，**0 个 crappy**（`config.py:_validate`
+  273 个函数，均值 4.8，最高 21.1，**0 个 crappy**（`config.py:_validate`
   按 section 拆成 6 个小函数；`collect._cap` / `redistill._fetch_day_entries` /
   `claude_code` 错误提取补测试到 100% 覆盖；2026-09-25 从 `ask.py` 拆出的
   `ask_expand.py` 进来时是 100% 覆盖）。
   **这串数字是手写的，没有门禁盯着**——`make crap` 只保证"没有 crappy 函数"，
   不会因为你改了代码而告诉你 README 过期了（变异基线有 `baseline_check.py`，
   CRAP 没有对应的东西）。数字对不上时以 `make crap` 的输出为准。
-  用例数过去同样没人看着：**974 个（963 passed + 1 skipped，2026-09-28 实测
-  `pytest -q`）**——在本轮核对前它停在"844"上，正是这条"没有门禁"的后果。现在
+  用例数过去同样没人看着：**976 个（975 passed + 1 skipped，2026-09-28 实测
+  `pytest -q`）**——**这是 Python 侧的数**；在本轮核对前它停在"844"上，正是这条
+  "没有门禁"的后果。现在
   `make baseline` 会核对这一段的**收集数**（括号里那两个数是那天的实测快照；
-  收集数一变就得重测一遍，把三个数一起改）。
+  收集数一变就得重测一遍，把三个数一起改）。**前端另有 10 条 Vitest + 1 条 Playwright
+  e2e**（`pnpm --dir web test` / `pnpm --dir web e2e`）——两组分开报，免得一个总数
+  被读成"已经含前端"（v0.9 起；`baseline` 只核对 Python 那个数）。
 - **孤儿模块**（`scripts/orphan_check.py`）补的是 CRAP 的盲区：CRAP 问的是
   "复杂的代码测够了吗"，问不了"这个模块有人碰过吗"。一个只有简单函数
   （复杂度 1）的模块，哪怕零测试，CRAP 也只有 1×(1-0)³+1 = **2** —— 离 30

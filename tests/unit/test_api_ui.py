@@ -1,7 +1,8 @@
-"""审阅页与只读端点的契约测试（T098 / PRD AC-018、NFR-009、NFR-010）。
+"""审阅页与只读端点的契约测试（T098 起，v0.9 由 T116 改口径）。
 
-这一片是"只看不写"：页面能打开、能列条目、能看详情，且**不出本机、不拉外链**。
-真正写库的能力（编辑/软删）在片 2，本文件刻意不覆盖。
+页面从 v0.9 起是 `web/` 前端工程的**构建产物**：`GET /` 读 `web/dist/index.html`，
+静态资源走 `/assets/{path}`。所以这里用 monkeypatch `_WEB_DIST` 构造
+"有产物 / 没产物"两种现场 —— 不去依赖仓库里真有没有 build 过。
 """
 
 import re
@@ -21,36 +22,67 @@ def client():
     return TestClient(app)
 
 
+@pytest.fixture
+def built_dist(tmp_path, monkeypatch):
+    """最小可用的假产物：入口 HTML + 一个带 hash 的资源。"""
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text(
+        '<!doctype html><html><body><div id="root"></div>'
+        '<script type="module" src="/assets/index-abc123.js"></script></body></html>',
+        encoding="utf-8",
+    )
+    (dist / "assets" / "index-abc123.js").write_text("console.log('first-rag')\n", encoding="utf-8")
+    monkeypatch.setattr(app_module, "_WEB_DIST", dist)
+    return dist
+
+
 # --- GET /：静态单页，零外链 ---
 
 
-def test_index_serves_the_review_page(client):
+def test_index_serves_the_built_entry(client, built_dist):
     response = client.get("/")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     body = response.text
-    assert "<title>" in body and "条目审阅" in body
-    assert 'fetch("/entries?' in body or "fetch('/entries?" in body
+    assert 'id="root"' in body               # Vite 的挂载点
+    assert 'type="module"' in body           # 入口是 ES module，不是内联脚本
 
 
-def test_index_wires_related_and_neighbour_navigation(client):
-    """FR-027：关联边与同日前后翻要能点 —— 页面里得有这两处接线（哪怕只是模板串）。"""
-    body = client.get("/").text
-    assert 'class="entry-link"' in body
-    assert 'id="prev-entry"' in body and 'id="next-entry"' in body
+def test_assets_are_served_from_the_same_dist(client, built_dist):
+    """/assets 必须和 `GET /` 指向同一个目录 —— 分开配置就是"页面能开、资源 404"。"""
+    response = client.get("/assets/index-abc123.js")
+    assert response.status_code == 200
+    assert "first-rag" in response.text
 
 
-def test_index_has_no_external_urls(client):
+def test_index_has_no_external_urls(client, built_dist):
     """NFR-009：断网也要能用。任何 http(s) 地址、协议相对地址、外链资源都算违规。"""
     body = client.get("/").text
     offenders = re.findall(r"(?:https?:)?//[A-Za-z0-9.-]+", body)
     assert not offenders, f"页面引用了外部地址：{sorted(set(offenders))}"
 
 
-def test_index_does_not_load_remote_assets(client):
+def test_index_does_not_load_remote_assets(client, built_dist):
     body = client.get("/").text
     for pattern in ("src=\"//", "href=\"//", "url(http", "@import"):
         assert pattern not in body, f"页面含外部资源引用：{pattern}"
+
+
+def test_missing_build_gives_503_with_the_next_step(client, tmp_path, monkeypatch):
+    """产物没构建时不返回空白页，而是 503 + "先跑 make ui"（T115 的硬性要求）。"""
+    monkeypatch.setattr(app_module, "_WEB_DIST", tmp_path / "not-built")
+    response = client.get("/")
+    assert response.status_code == 503
+    assert "make ui" in response.json()["detail"]
+
+
+def test_asset_path_traversal_is_blocked(client, built_dist, tmp_path):
+    """`..` 不许逃出 assets/ —— 逃逸守卫由显式路由提供（不是 StaticFiles 的默认行为）。"""
+    (built_dist / "secret.txt").write_text("nope", encoding="utf-8")
+    assert client.get("/assets/../secret.txt").status_code == 404
+    assert client.get("/assets/%2e%2e/secret.txt").status_code == 404
+    assert client.get("/assets/missing.js").status_code == 404
 
 
 # --- GET /types：类型枚举来自配置 ---
