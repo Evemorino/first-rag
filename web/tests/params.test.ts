@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { buildEntriesQuery } from "../src/api/params";
+import { buildEntriesQuery, splitTags } from "../src/api/params";
+import { payloadOf } from "../src/components/EntryEditor";
+import type { EntryDetailView } from "../src/api/client";
 import { emptyFilters } from "../src/store/ui";
 
 describe("buildEntriesQuery", () => {
@@ -20,5 +22,32 @@ describe("buildEntriesQuery", () => {
     expect(buildEntriesQuery({ ...emptyFilters, include_deleted: true }, 1)).toBe(
       "page=1&include_deleted=true",
     );
+  });
+});
+
+describe("splitTags", () => {
+  it("按逗号拆、去两端空白、丢掉空段", () => {
+    expect(splitTags(" a, b ,, c ")).toEqual(["a", "b", "c"]);
+  });
+
+  it("空输入给空数组（不是 ['']）", () => {
+    expect(splitTags("  ,  ")).toEqual([]);
+  });
+});
+
+describe("payloadOf", () => {
+  const view = {
+    id: "a",
+    text: "正文",
+    type: "progress",
+    tags: ["t"],
+    project: "p",
+    rev: 3,
+  } as EntryDetailView;
+
+  it("草稿里的标签串变成数组，rev 带上（乐观并发的前提）", () => {
+    expect(
+      payloadOf(view, { text: "改过", type: "idea", tags: " a, b ", project: " q " }),
+    ).toEqual({ rev: 3, text: "改过", type: "idea", tags: ["a", "b"], project: " q " });
   });
 });

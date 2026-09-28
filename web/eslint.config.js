@@ -43,6 +43,12 @@ export default tseslint.config(
     },
     rules: {
       "no-restricted-syntax": ["error", ...forbiddenBackend],
+      // 与 Python 侧同一条规矩、同一个数字（`scripts/size_guard.py` 的
+      // DEFAULT_MAX_FUNC_LINES = 80）。**口径也要对齐**：那边算的是
+      // `endline - lineno + 1`，即含空行与注释；所以这里不加 skipBlankLines /
+      // skipComments —— 否则同一段代码在两边的读数会不一样，而"哪个数字算数"
+      // 正是这类门禁最容易烂掉的地方。
+      "max-lines-per-function": ["error", { max: 80 }],
     },
   },
 );
