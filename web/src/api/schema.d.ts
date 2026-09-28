@@ -287,6 +287,104 @@ export interface components {
             /** Project */
             project?: string | null;
         };
+        /**
+         * EntryDetailView
+         * @description 详情：在视图之上多两个同日邻居（当日范围没有邻居时是 null）。
+         */
+        EntryDetailView: {
+            /** Id */
+            id: string;
+            /** Text */
+            text: string | null;
+            /** Type */
+            type: string | null;
+            /** Tags */
+            tags: string[] | null;
+            /** Project */
+            project: string | null;
+            /** Date */
+            date: string | null;
+            /** Source */
+            source: string | null;
+            /** Created At */
+            created_at: string | null;
+            /** Source Refs */
+            source_refs: string[];
+            /** Distill Version */
+            distill_version: string | null;
+            /** Related */
+            related: string[];
+            /** Original Text */
+            original_text: string | null;
+            /** Edited */
+            edited: boolean;
+            /** Edited At */
+            edited_at: string | null;
+            /** Deleted At */
+            deleted_at: string | null;
+            /** Deleted Reason */
+            deleted_reason: string | null;
+            /** Rev */
+            rev: number;
+            /** Prev Id */
+            prev_id: string | null;
+            /** Next Id */
+            next_id: string | null;
+        };
+        /**
+         * EntryListView
+         * @description 分页列表。`total` 是**过滤后**的总数（不是本页条数）。
+         */
+        EntryListView: {
+            /** Total */
+            total: number;
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+            /** Entries */
+            entries: components["schemas"]["EntryView"][];
+        };
+        /**
+         * EntryView
+         * @description 一条条目的生效视图（列表行 + 三个写接口的返回）。
+         */
+        EntryView: {
+            /** Id */
+            id: string;
+            /** Text */
+            text: string | null;
+            /** Type */
+            type: string | null;
+            /** Tags */
+            tags: string[] | null;
+            /** Project */
+            project: string | null;
+            /** Date */
+            date: string | null;
+            /** Source */
+            source: string | null;
+            /** Created At */
+            created_at: string | null;
+            /** Source Refs */
+            source_refs: string[];
+            /** Distill Version */
+            distill_version: string | null;
+            /** Related */
+            related: string[];
+            /** Original Text */
+            original_text: string | null;
+            /** Edited */
+            edited: boolean;
+            /** Edited At */
+            edited_at: string | null;
+            /** Deleted At */
+            deleted_at: string | null;
+            /** Deleted Reason */
+            deleted_reason: string | null;
+            /** Rev */
+            rev: number;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -308,6 +406,14 @@ export interface components {
         SyncBody: {
             /** Date */
             date?: string | null;
+        };
+        /**
+         * TypesView
+         * @description 配置里的类型枚举（供页面筛选与编辑下拉，FR-016）。
+         */
+        TypesView: {
+            /** Types */
+            types: string[];
         };
         /** ValidationError */
         ValidationError: {
@@ -585,9 +691,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["TypesView"];
                 };
             };
         };
@@ -615,9 +719,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["EntryListView"];
                 };
             };
             /** @description Validation Error */
@@ -648,9 +750,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["EntryDetailView"];
                 };
             };
             /** @description Validation Error */
@@ -685,9 +785,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["EntryView"];
                 };
             };
             /** @description Validation Error */
@@ -722,9 +820,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["EntryView"];
                 };
             };
             /** @description Validation Error */
@@ -759,9 +855,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["EntryView"];
                 };
             };
             /** @description Validation Error */

@@ -1,6 +1,11 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
-import { api, type EditPayload, type EntryView } from "../api/client";
+import {
+  api,
+  type EditPayload,
+  type EntryDetailView,
+  type EntryView,
+} from "../api/client";
 
 /** 写能力（FR-028 / FR-029）。乐观更新：先改本地缓存，失败再回滚；成功后失效重取。 */
 function useWrite<TArgs>(mutate: (args: TArgs) => Promise<EntryView>, id: (args: TArgs) => string) {
@@ -22,7 +27,12 @@ function useWrite<TArgs>(mutate: (args: TArgs) => Promise<EntryView>, id: (args:
       queryClient.invalidateQueries({ queryKey: ["entry"] });
     },
     onSuccess: (view, args) => {
-      queryClient.setQueryData(["entry", id(args)], view);
+      // **合并**而不是覆盖：写接口返回的是 EntryView，详情缓存是 EntryDetailView ——
+      // 前者没有同日邻居字段（那是详情独有的）。直接覆盖会把缓存里的 prev_id /
+      // next_id 抹掉；这个差异是生成类型带来的，手写类型时看不出来。
+      queryClient.setQueryData<EntryDetailView>(["entry", id(args)], (previous) =>
+        previous ? { ...previous, ...view } : undefined,
+      );
       queryClient.invalidateQueries({ queryKey: ["entries"] });
     },
   });

@@ -6,6 +6,7 @@
 """
 
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,9 @@ from src.api import app as app_module
 from src.api.app import app
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+import dist_external_url_check as dist_urls  # noqa: E402  (先补 sys.path 才能导入)
 
 
 @pytest.fixture
@@ -67,6 +71,24 @@ def test_index_does_not_load_remote_assets(client, built_dist):
     body = client.get("/").text
     for pattern in ("src=\"//", "href=\"//", "url(http", "@import"):
         assert pattern not in body, f"页面含外部资源引用：{pattern}"
+
+
+def test_the_whole_build_output_has_no_external_urls():
+    """整个 `dist/`（html + js + css）都不许有外部地址（T128）。
+
+    上面两条只扫入口 HTML —— 而产物的主体是 `assets/*.js|css`，CDN、字体、
+    `import("https://…")` 全藏在那儿。这条把它补齐：**扫整个产物**。
+
+    `web/dist` 不入库，所以本机没构建过就跳过；**CI 里那一步是不可跳过的**
+    （`pnpm build` 之后显式跑同一个脚本）—— 跳过的是本地便利，不是那条门禁。
+    """
+    dist = REPO_ROOT / "web" / "dist"
+    if not dist.is_dir():
+        pytest.skip("web/dist 还没构建（先 make ui）；CI 上这一步不可跳过")
+
+    found = dist_urls.scan_dir(dist)
+
+    assert not found, f"产物里有外部地址：{found}"
 
 
 def test_missing_build_gives_503_with_the_next_step(client, tmp_path, monkeypatch):
@@ -137,11 +159,37 @@ def test_entries_route_forwards_filters(client, monkeypatch):
     }
 
 
+def _view(entry_id: str = "abc", **overrides) -> dict:
+    """形状完整的视图（T129 的 response_model 是白名单 + 必填，半截 dict 会 500）。"""
+    view = {
+        "id": entry_id,
+        "text": "正文",
+        "type": "progress",
+        "tags": ["t"],
+        "project": None,
+        "date": "2026-09-18",
+        "source": "claude_code",
+        "created_at": None,
+        "source_refs": [],
+        "distill_version": None,
+        "related": [],
+        "original_text": "正文",
+        "edited": False,
+        "edited_at": None,
+        "deleted_at": None,
+        "deleted_reason": None,
+        "rev": 0,
+    }
+    return {**view, **overrides}
+
+
 def test_entries_route_defaults_hide_deleted(client, monkeypatch):
     captured = {}
     monkeypatch.setattr(
         app_module.entries_module, "list_entries",
-        lambda **kwargs: captured.update(kwargs) or {"entries": [], "total": 0},
+        lambda **kwargs: captured.update(kwargs) or {
+            "entries": [], "total": 0, "page": 1, "page_size": 20,
+        },
     )
     client.get("/entries")
     assert captured["include_deleted"] is False
@@ -163,7 +211,7 @@ def test_entries_route_maps_bad_page_to_400(client, monkeypatch):
 def test_entry_detail_returns_payload(client, monkeypatch):
     monkeypatch.setattr(
         app_module.entries_module, "get_entry",
-        lambda entry_id: {"id": entry_id, "text": "正文", "rev": 0},
+        lambda entry_id: _view(entry_id, prev_id=None, next_id=None),
     )
     response = client.get("/entries/abc")
     assert response.status_code == 200

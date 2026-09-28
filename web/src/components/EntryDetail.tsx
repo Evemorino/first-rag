@@ -28,9 +28,12 @@ export function EntryDetail({ entryId }: { entryId: string | null }) {
   useEffect(() => {
     if (data) {
       setDraft({
-        text: data.text,
-        type: data.type,
-        tags: data.tags.join(", "),
+        // `?? ""` / `?? []` 不是防御性冗余：生成类型里 text / type / tags 确实是
+        // 可空的（后端 `effective()` 取 payload 原值）。手写类型把它们写成必填，
+        // 只是把这件事藏在编译期之外。
+        text: data.text ?? "",
+        type: data.type ?? "",
+        tags: (data.tags ?? []).join(", "),
         project: data.project ?? "",
       });
     }
@@ -64,7 +67,7 @@ export function EntryDetail({ entryId }: { entryId: string | null }) {
       <dl className="space-y-1">
         <Row label="项目" value={data.project} />
         <Row label="来源" value={data.source} />
-        <Row label="标签" value={data.tags.join("、")} />
+        <Row label="标签" value={(data.tags ?? []).join("、")} />
         <Row label="创建" value={data.created_at} />
         <Row label="溯源" value={data.source_refs.join("、")} />
         <Row

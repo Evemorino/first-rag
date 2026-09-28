@@ -25,13 +25,42 @@ def fake_edit(monkeypatch):
     def edit(entry_id, **kwargs):
         captured["entry_id"] = entry_id
         captured.update(kwargs)
-        return {"id": entry_id, "rev": kwargs["rev"] + 1, "text": kwargs.get("text")}
+        return _view(entry_id, rev=kwargs["rev"] + 1, text=kwargs.get("text"))
 
     monkeypatch.setattr(app_module.entries_module, "edit_entry", edit)
     return captured
 
 
 # --- 转发与状态码 ---
+
+
+def _view(entry_id: str = "abc", **overrides) -> dict:
+    """一个**形状完整**的视图，供桩函数返回。
+
+    T129 给路由挂了 response_model 之后，它同时是白名单与必填表 —— 半截 dict
+    （`{"id": ...}`）会被 FastAPI 判成 500 ResponseValidationError。这些用例本来
+    只关心"参数有没有转发出去"，但既然路由会校验返回值，桩就得给出真实形状。
+    """
+    view = {
+        "id": entry_id,
+        "text": "正文",
+        "type": "progress",
+        "tags": ["t"],
+        "project": None,
+        "date": "2026-09-18",
+        "source": "claude_code",
+        "created_at": None,
+        "source_refs": [],
+        "distill_version": None,
+        "related": [],
+        "original_text": "正文",
+        "edited": False,
+        "edited_at": None,
+        "deleted_at": None,
+        "deleted_reason": None,
+        "rev": 0,
+    }
+    return {**view, **overrides}
 
 
 def test_patch_forwards_only_editable_fields(client, fake_edit):
@@ -90,11 +119,11 @@ def test_delete_and_restore_forward_rev(client, monkeypatch):
     deleted, restored = {}, {}
     monkeypatch.setattr(
         app_module.entries_module, "delete_entry",
-        lambda entry_id, **kw: deleted.update(kw, id=entry_id) or {"id": entry_id},
+        lambda entry_id, **kw: deleted.update(kw, id=entry_id) or _view(entry_id),
     )
     monkeypatch.setattr(
         app_module.entries_module, "restore_entry",
-        lambda entry_id, **kw: restored.update(kw, id=entry_id) or {"id": entry_id},
+        lambda entry_id, **kw: restored.update(kw, id=entry_id) or _view(entry_id),
     )
 
     assert client.post(
@@ -135,7 +164,7 @@ def test_writes_reject_non_local_callers(client, headers):
 def test_writes_accept_localhost_origin(client, monkeypatch):
     monkeypatch.setattr(
         app_module.entries_module, "edit_entry",
-        lambda entry_id, **_kw: {"id": entry_id},
+        lambda entry_id, **_kw: _view(entry_id),
     )
     response = client.patch(
         "/entries/abc",

@@ -1,36 +1,27 @@
-/** 后端 JSON 端点的最小封装（只读面）。写面（PATCH/POST）在片 2 加。 */
+/** 后端 JSON 端点的最小封装（只读面 + 写面）。 */
+
+import type { components } from "./schema";
 
 /** 写接口要求这个头（后端 require_local 的第二道闸，缺了就是 403）。 */
 const UI_HEADER = "first-rag-ui";
 
-export type EntryView = {
-  id: string;
-  text: string;
-  type: string;
-  tags: string[];
-  project: string | null;
-  date: string;
-  source: string;
-  created_at: string | null;
-  source_refs: string[];
-  distill_version: string | null;
-  related: string[];
-  original_text: string;
-  edited: boolean;
-  edited_at: string | null;
-  deleted_at: string | null;
-  deleted_reason: string | null;
-  rev: number;
-  prev_id?: string | null;
-  next_id?: string | null;
-};
+type Schemas = components["schemas"];
 
-export type EntryList = {
-  total: number;
-  page: number;
-  page_size: number;
-  entries: EntryView[];
-};
+/**
+ * 视图类型**从后端 openapi.json 生成**（`make ui-types` → `schema.d.ts`，快照入库，
+ * 与后端漂移时 CI 会红）。手写的那份在 T129 删掉了：手抄的类型和后端各漂各的，
+ * 而漂移不会报错，只在运行时以"某个字段突然是 undefined"的形式露出来。
+ *
+ * 注意 `text` / `type` / `tags` 在生成类型里确实是**可空**的（`effective()` 取的是
+ * payload 原值）—— 手写那份写成 `string` 是句假话，真遇到空值只会渲染出空白。
+ */
+export type EntryView = Schemas["EntryView"];
+export type EntryDetailView = Schemas["EntryDetailView"];
+export type EntryList = Schemas["EntryListView"];
+export type TypesView = Schemas["TypesView"];
+export type EditPayload = Schemas["EditBody"];
+export type DeletePayload = Schemas["DeleteBody"];
+export type RestorePayload = Schemas["RevBody"];
 
 async function getJson<T>(url: string): Promise<T> {
   const response = await fetch(url);
@@ -64,23 +55,16 @@ async function sendJson<T>(method: string, url: string, body: unknown): Promise<
   return (await response.json()) as T;
 }
 
-export type EditPayload = {
-  rev: number;
-  text?: string;
-  type?: string;
-  tags?: string[];
-  project?: string;
-};
-
 export const api = {
-  types: () => getJson<{ types: string[] }>("/types"),
+  types: () => getJson<TypesView>("/types"),
   entries: (query: string) => getJson<EntryList>(`/entries?${query}`),
-  entry: (id: string) => getJson<EntryView>(`/entries/${encodeURIComponent(id)}`),
+  entry: (id: string) =>
+    getJson<EntryDetailView>(`/entries/${encodeURIComponent(id)}`),
   edit: (id: string, payload: EditPayload) =>
     sendJson<EntryView>("PATCH", `/entries/${encodeURIComponent(id)}`, payload),
-  remove: (id: string, payload: { rev: number; reason?: string }) =>
+  remove: (id: string, payload: DeletePayload) =>
     sendJson<EntryView>("POST", `/entries/${encodeURIComponent(id)}/delete`, payload),
-  restore: (id: string, payload: { rev: number }) =>
+  restore: (id: string, payload: RestorePayload) =>
     sendJson<EntryView>("POST", `/entries/${encodeURIComponent(id)}/restore`, payload),
 };
 

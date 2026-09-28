@@ -95,6 +95,12 @@ jobs:
       - name: 前端构建（顺带证明产物能从零构建出来）
         run: pnpm --dir web build
 
+      # 产物里不许有外部地址（T128 / NFR-009 ③）：这条**不能进提交钩子** —— 产物
+      # 不入库，钩子没东西可扫。所以它在这里是不可跳过的那一份（本地那半在
+      # tests/unit/test_api_ui.py 里，dist 不存在时会 skip）。
+      - name: 产物里不许有外部地址（NFR-009 ③）
+        run: uv run python scripts/dist_external_url_check.py
+
       - name: Playwright 浏览器内核
         run: pnpm --dir web exec playwright install --with-deps chromium
 

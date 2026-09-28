@@ -37,6 +37,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src import ask, config, entries as entries_module, log, sync
+from src.api import schemas
 
 logger = logging.getLogger(__name__)
 
@@ -249,14 +250,14 @@ def asset(path: str) -> FileResponse:
     return FileResponse(target)
 
 
-@app.get("/types")
+@app.get("/types", response_model=schemas.TypesView)
 def list_types() -> dict:
     """类型枚举来自 config/schema.json —— 页面不硬编码类型表（FR-016 / 宪法 III）。"""
     types = config.load_schema().get("types", [])
     return {"types": [t["name"] if isinstance(t, dict) else str(t) for t in types]}
 
 
-@app.get("/entries")
+@app.get("/entries", response_model=schemas.EntryListView)
 def list_entries(
     date_from: str | None = None,
     date_to: str | None = None,
@@ -281,7 +282,7 @@ def list_entries(
         raise HTTPException(400, str(exc)) from exc
 
 
-@app.get("/entries/{entry_id}")
+@app.get("/entries/{entry_id}", response_model=schemas.EntryDetailView)
 def get_entry(entry_id: str) -> dict:
     """条目详情（FR-027）：生效值 + 原始正文 + 留痕 + 关联边。"""
     entry = entries_module.get_entry(entry_id)
@@ -343,7 +344,7 @@ def _write(call):
         ) from exc
 
 
-@app.patch("/entries/{entry_id}")
+@app.patch("/entries/{entry_id}", response_model=schemas.EntryView)
 def patch_entry(
     entry_id: str, body: EditBody, _: None = Depends(require_local)
 ) -> dict:
@@ -360,7 +361,7 @@ def patch_entry(
     )
 
 
-@app.post("/entries/{entry_id}/delete")
+@app.post("/entries/{entry_id}/delete", response_model=schemas.EntryView)
 def post_delete(
     entry_id: str, body: DeleteBody, _: None = Depends(require_local)
 ) -> dict:
@@ -370,7 +371,7 @@ def post_delete(
     )
 
 
-@app.post("/entries/{entry_id}/restore")
+@app.post("/entries/{entry_id}/restore", response_model=schemas.EntryView)
 def post_restore(
     entry_id: str, body: RevBody, _: None = Depends(require_local)
 ) -> dict:

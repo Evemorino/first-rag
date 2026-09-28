@@ -17,6 +17,18 @@ const forbiddenBackend = [
     selector: "ImportDeclaration[source.value=/^(node:fs|fs|node:fs\\/promises)$/]",
     message: "前端不得写文件（NFR-009 ④）",
   },
+  // NFR-009 ③（无外部 CDN、断网可用）的一半：静态引用在源码这一层就挡掉。
+  // 另一半在产物那一侧 —— scripts/dist_external_url_check.py 扫整个 web/dist，
+  // 因为 bundle 里也可能出现源码里看不出来的地址（依赖注入、CSS 里的 url()）。
+  {
+    selector:
+      "ImportDeclaration[source.value=/^(?:https?:)?\\/\\//], ImportExpression[source.value=/^(?:https?:)?\\/\\//]",
+    message: "不得从远程 URL 导入（NFR-009 ③：断网也要能用）",
+  },
+  {
+    selector: "Literal[value=/^(?:https?:)?\\/\\//]",
+    message: "不得引用远程地址（NFR-009 ③：断网也要能用）",
+  },
 ];
 
 export default tseslint.config(

@@ -174,6 +174,13 @@ WEB_BAD_PAGE_ASSERT = (
 # CI 专属关卡的标签：它不是 .pre-commit-config.yaml 里的钩子。
 E2E_CASE = "playwright-e2e"
 
+# T128：NFR-009 ③ 的源码那一半（另一半扫整个产物，在 CI 里）。
+WEB_REMOTE_IMPORT = (
+    'import "https://cdn.example.com/x.js";\n'
+    "\n"
+    "export const remote = true;\n"
+)
+
 
 def coverage_xml(filename: str, lines: range | list[int], hits: int) -> str:
     """造一份最小 coverage.xml：只有一个模块，指定行都是同一个命中数。"""
@@ -382,6 +389,12 @@ CASES: list[Case] = [
          why="ADR-21 第 3 条（NFR-009 ④）：前端只许消费既有 JSON 端点，不许直连向量库"
              "或模型服务。夹具走的是 import 形状，规则是 eslint 的 no-restricted-syntax"
              "—— 所以这条红了不等于 lint 配好了，还得看下一条（干净仓库必须绿）"),
+    Case("web-eslint", "前端从远程 URL 导入",
+         {"web/src/cdn.ts": WEB_REMOTE_IMPORT}, "red", web=True,
+         why="NFR-009 ③ 的源码那一半（T128）：断网可用意味着不许从 CDN 取代码。"
+             "它的另一半扫**整个产物**（bundle 与 CSS 里可能有源码里看不见的地址），"
+             "那是 scripts/dist_external_url_check.py，走 CI 与契约测试，不进钩子 —— "
+             "产物不入库，钩子没东西可扫"),
     Case("web-tsc", "前端类型错误",
          {"web/src/broken.ts": WEB_TYPE_ERROR}, "red", web=True,
          why="`tsc --noEmit` 是唯一能拦住类型漂移的一层（vite 构建不做类型检查）。"
