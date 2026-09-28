@@ -274,7 +274,7 @@ web/
 
 **只进 CI**：`playwright test`（覆盖 AC-018~021 的 8 步；需 `playwright install --with-deps chromium`）。
 
-**`gate-selftest` 新增 4 类用例**（植入违规必须变红）：eslint（违规 import）、tsc（类型错误）、vitest（失败断言）、playwright（页面断言失败）。**实现约束**：临时仓库里要能**离线**装前端依赖（复用 pnpm 全局 store，同 Python 侧复用 uv 缓存的做法），否则"证明钩子会红"会变成每次联网；每个 JS 用例预计 +1~2 秒。
+**`gate-selftest` 新增 4 类用例**（植入违规必须变红）：eslint（违规 import）、tsc（类型错误）、vitest（失败断言）、playwright（页面断言失败）。**实现约束**：临时仓库里要能**离线**装前端依赖（复用 pnpm 全局 store，同 Python 侧复用 uv 缓存的做法），否则"证明钩子会红"会变成每次联网。**实测回填（2026-09-28）**：三条前端钩子用例各 1–2 秒，e2e 那一对约 8 秒（要起真后端 + 浏览器），`make gate-selftest` 整体从约 10 秒涨到约 20 秒。
 
 **配套两条**：`size_guard` 扩到 `web/src/**/*.{ts,tsx}`（沿用同一套阈值：文件 ≤300 行、函数 ≤80 行）；README 的用例数**分列 Python / 前端**。
 

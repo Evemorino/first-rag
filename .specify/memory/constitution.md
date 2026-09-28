@@ -46,6 +46,10 @@ MUST 保持薄入口：只做参数校验与调用核心层，MUST NOT 含业务
 去重状态以库内幂等 ID 为唯一依据，MUST NOT 向源目录回写任何标记。
 密钥 MUST NOT 出现在代码、配置模板或任何提交物中，只从环境读取。
 data/、notes/、.env MUST 永久处于 gitignore。
+**构建期产物不属本条的运行时写入**：`web/dist/`、`web/openapi.json` 这类东西由
+**人显式触发的构建**产生（`make ui` / `make ui-types`），不是运行时在产出数据 ——
+它们的位置与生命周期见 PRD §6，且 MUST 处于 gitignore。把它塞进本条的写入根枚举
+会让"运行时只写两根"这条判据变糊，所以本条只澄清、不扩枚举。
 
 唯一例外（封闭枚举，不许多出第二项）：`config/scope.json`。它是采集范围的
 唯一事实来源，`make scope` 只是它的编辑器（PRD FR-005），且 `config/` 与
@@ -71,7 +75,8 @@ mtime 与内容指纹 MUST 不变。例外那一条的调用方 MUST 由登记�
 
 MUST NOT 为尚未到来的需求引入技术或组件。任何引入的组件 MUST 满足
 "移除 = 删除目录 / 卸载依赖"级别的可逆。依赖 MUST 安装在项目内
-（.venv），MUST NOT 做全局安装或修改全局状态（brew 除外）。
+（Python：`.venv`；前端：`web/node_modules`），MUST NOT 做全局安装或修改
+全局状态（brew 除外）。
 选型 MUST 倾向开源、免费、可逆。
 
 理由：本项目为单用户本机系统；预支的复杂度没有消费者，
@@ -127,6 +132,21 @@ MUST NOT 为尚未到来的需求引入技术或组件。任何引入的组件 M
 
 ## Sync Impact Report
 
+- **2.1.1（2026-09-28）** — PATCH：两处措辞澄清（V 补一句"构建期产物不属运行时写入"；
+  VI 的括号举例补前端依赖目录）。**没有任何原则增删、没有任何 MUST 的松紧变化**。
+  - 触发原因：v0.9 引入 Node 工具链与 `web/` 构建产物之后，跨工件一致性审查
+    （`speckit-analyze`）发现两处说明与现状不严丝合缝：V 只谈运行时与 tmp，而新增的
+    `web/dist/`、`web/openapi.json` 是"写到仓库里"的构建产物（位置清单里没有它）；
+    VI 的举例只写了 `.venv`，而前端依赖在 `web/node_modules`。
+  - 影响面：仅为 V 的说明段与 VI 的括号举例；判定标准未变（运行时写入仍只允许
+    `data/`、`notes/` 两根 + `config/scope.json` 那一条封闭例外）。
+  - 被显式拒绝的两条替代路：① 把 `web/dist/` 也纳入 V 的写入根枚举 —— 它不是运行时
+    写入，塞进枚举会让"运行时只写两根"这个判据变糊，且下一个构建产物又得再扩一次；
+    ② 把前端依赖改回由 `.venv` 管理 —— Node 依赖装不进 Python venv，这是物理事实。
+  - 后续一致性检查：`make boundary-list` 仍应恰好是 5 个登记项、其中只有
+    `src/scope.py:save` 的 target 不在 `data/`、`notes/` 下；`web/dist/` 与
+    `web/openapi.json` 必须继续出现在 `.gitignore` 里（由 `make ui` 之后的
+    `git status` 应为干净来佐证）。
 - **2.1.0（2026-09-23）** — MINOR：V 新增一条封闭枚举的写入例外 `config/scope.json`。
   - 触发原因：新上的写入边界门禁（`scripts/write_boundary_check.py`）扫出
     `src/scope.py:save` 是全库唯一落在 data/、notes/ 之外的写入点，而按 V 旧措辞
@@ -142,4 +162,4 @@ MUST NOT 为尚未到来的需求引入技术或组件。任何引入的组件 M
 - **2.0.0** — 原则重定义与扩充（见 git 历史）。
 - **1.x** — 初版批准。
 
-**Version**: 2.1.0 | **Ratified**: 2026-09-18 | **Last Amended**: 2026-09-23
+**Version**: 2.1.1 | **Ratified**: 2026-09-18 | **Last Amended**: 2026-09-28

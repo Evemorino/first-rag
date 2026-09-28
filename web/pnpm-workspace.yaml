@@ -2,6 +2,10 @@
 # 只管旧版本）。esbuild 是 Vite 的构建依赖 —— 不放行它的安装脚本，vite build
 # 就没有可用的 esbuild 二进制。
 #
+# **这个文件不表示"多包工作区"**：它没有 `packages:` 字段，`web/` 仍然只有一个包
+# （宪法架构约束里那句"多包架构 MUST NOT 引入"的判据是"独立演进、独立版本化的多个
+# 消费者"，不成立）。pnpm 把设置放在这个文件名下，仅此而已 —— 之前被它的名字骗过一次。
+#
 # 字段名随版本换过：pnpm 10/11 认 onlyBuiltDependencies（列表），pnpm 12 认
 # allowBuilds（名字 → true/false 的映射）。**两个都写**：CI 按 packageManager
 # 字段装 pnpm 12，而本地谁用哪个版本不好假定。踩过的坑是 pnpm 12 首次运行会

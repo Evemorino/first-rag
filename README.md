@@ -101,6 +101,14 @@ CRAP → 孤儿模块 → **eslint / tsc / vitest**（三条只对 `web/` 生效
 它们红，而不是跳过**：跳过的门禁等于没有（NFR-012 的取舍）。浏览器冒烟不进提交钩子，
 它要真后端 + 真 Qdrant、几十秒，只留在 CI。
 
+**"断网可用"的边界**（NFR-009 ③）：**装完依赖之后**，开发与运行都不需要网络。
+实测（沙箱里没有网络时）：`pnpm --dir web build` / `lint` / `test` 全绿；`make ui-dev`
+起得来且 `GET /` 返回 200（只监听 `[::1]:5173`，所以调试请开
+**`http://localhost:5173/`** —— 写 `127.0.0.1:5173` 会连不上，实测踩到过）。
+**需要网络的只有两处**：首次 `pnpm install`（装依赖）与 CI 的 `playwright install`
+（下载浏览器内核）。产物侧另有机械判据：整个 `dist/` 由 `scripts/dist_external_url_check.py`
+扫外链，CI 与契约测试两处都跑。
+
 - **pytest 挂了会直接停下**（`fail_fast`）—— 否则 CRAP 会拿一份残缺的
   coverage.xml 判门禁，凭空报出一堆不存在的 crappy 函数。CRAP 与孤儿检查
   都吃这份数据，所以必须排在 pytest 之后。
@@ -261,7 +269,7 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   **这串数字是手写的，没有门禁盯着**——`make crap` 只保证"没有 crappy 函数"，
   不会因为你改了代码而告诉你 README 过期了（变异基线有 `baseline_check.py`，
   CRAP 没有对应的东西）。数字对不上时以 `make crap` 的输出为准。
-  用例数过去同样没人看着：**1002 个（1001 passed + 1 skipped，2026-09-28 实测
+  用例数过去同样没人看着：**1009 个（1008 passed + 1 skipped，2026-09-28 实测
   `pytest -q`）**——**这是 Python 侧的数**；在本轮核对前它停在"844"上，正是这条
   "没有门禁"的后果。现在
   `make baseline` 会核对这一段的**收集数**（括号里那两个数是那天的实测快照；
