@@ -1,7 +1,15 @@
-allowBuilds:
-  esbuild: set this to true or false
 # pnpm 10+ 把"允许哪些依赖跑安装脚本"挪到了这里（package.json 里的 pnpm 字段
-# 只管旧版本）。esbuild 是 Vite 的构建依赖，必须允许它的安装脚本 —— 否则每次
-# install 都会打一条 ERR_PNPM_IGNORED_BUILDS 的警告。
+# 只管旧版本）。esbuild 是 Vite 的构建依赖 —— 不放行它的安装脚本，vite build
+# 就没有可用的 esbuild 二进制。
+#
+# 字段名随版本换过：pnpm 10/11 认 onlyBuiltDependencies（列表），pnpm 12 认
+# allowBuilds（名字 → true/false 的映射）。**两个都写**：CI 按 packageManager
+# 字段装 pnpm 12，而本地谁用哪个版本不好假定。踩过的坑是 pnpm 12 首次运行会
+# 自己往这个文件里补一段 `allowBuilds: {esbuild: set this to true or false}`
+# 的**占位符**，照着提交上去等于没放行，且 pnpm 12 把"有构建脚本被忽略"当
+# **错误**（ERR_PNPM_IGNORED_BUILDS，非零退出）—— 本地 `pnpm build` 还能跑，
+# 因为 esbuild 已经装好过一次；CI 是干净环境，直接死在 install 这步。
+allowBuilds:
+  esbuild: true
 onlyBuiltDependencies:
   - esbuild

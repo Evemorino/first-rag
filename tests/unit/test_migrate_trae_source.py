@@ -223,9 +223,17 @@ def test_foreign_refs_is_empty_on_a_clean_migration():
 
 
 def test_old_and_new_memory_dirs_are_actually_different():
-    """防呆：两个常量若指向同一处，上面所有防护都会静默失效。"""
+    """防呆：两个常量若指向同一处，上面所有防护都会静默失效。
+
+    判据必须是**常量的值**，不能是本机的目录存在性：上一版在这里断言
+    `NEW_MEMORY_DIR.exists()`，等于要求跑测试的机器装过 Trae —— 开发者
+    机器上 `~/.trae/memory` 在，CI 的干净 HOME 里不在，于是本地全绿、
+    CI 从 v0.7 起一直红。钉死路径尾巴既能覆盖"两个常量撞车"，也能覆盖
+    "接错了另一个插件的目录"，且到哪台机器上都成立。
+    """
     assert migrate.OLD_MEMORY_DIR != migrate.NEW_MEMORY_DIR
-    assert migrate.NEW_MEMORY_DIR.exists()
+    assert migrate.OLD_MEMORY_DIR == Path.home() / ".trae-cn" / "memory"
+    assert migrate.NEW_MEMORY_DIR == Path.home() / ".trae" / "memory"
 
 
 # --- 迁移后自证 ---
