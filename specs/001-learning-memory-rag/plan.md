@@ -17,7 +17,7 @@
 - **Target Platform**: macOS 本机，单用户
 - **Project Type**: CLI 工具 + 按需 API 服务（非守护进程，PRD ADR-4）
 - **v0.8 新增**: 本机审阅页 —— 零构建静态单页，随 API 进程一起提供；**不引入新依赖、不新增常驻服务**（PRD NFR-008 / NFR-009）
-- **v0.9 变更**: 上面那条**作废** —— 审阅页改由 `web/` 前端工程构建（Vite + React + TypeScript + Zustand + Tailwind + TanStack Query，见 ADR-21）；新增 Node 工具链（版本钉 `mise.toml`、lockfile 入库），**构建产物不入库**，由接口进程读盘提供；**仍不新增常驻服务**（NFR-008 成立），前端被门禁禁止直连向量库/读密钥（NFR-009 第 ④ 条 + NFR-012）
+- **v0.9 变更**: 上面那条**作废** —— 审阅页改由 `web/` 前端工程构建（Vite + React + TypeScript + Zustand + Tailwind + TanStack Query，见 ADR-21）；新增 Node 工具链（版本钉 `mise.toml`、lockfile 入库），**构建产物 `web/dist/` 不入库**，由接口进程读盘提供；**类型快照 `web/src/api/schema.d.ts` 相反 —— 入库**（契约，CI 重生成后要求零差异）；**仍不新增常驻服务**（NFR-008 成立），前端被门禁禁止直连向量库/读密钥（NFR-009 第 ④ 条 + NFR-012）
 - **Performance Goals**: 当日 sync ≤5 分钟（NFR-006）。**计时按天**：2026-09-26 最忙日 09-25 全源端到端实测 **248.7s / 300s（83%）**，未突破（PRD v0.7.3 补测；4-源时代的 215.9s 口径已作废，见 PRD §9 风险表）；ask 单次 ≤10 秒（2026-09-25 实测 5.9s 达标；流式首字 0.7s）
 - **Constraints**: 写入仅限 `data/`、`notes/`（宪法 V，NON-NEGOTIABLE）；密钥走 `.env`
 - **Scale/Scope**: 单用户；日蒸馏输出 5–10K 字符；条目总量预期千级

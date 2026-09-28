@@ -10,6 +10,11 @@
 Makefile 的每条命令都通过 `uv run` 走项目内 `.venv`，无需手动激活。
 **Windows 机器上没有 make 时**，直接用等价命令（效果相同）：
 
+前端（`make ui` / `ui-dev` / `ui-types`）另需 Node 与 pnpm：Node 版本钉在
+`mise.toml`，pnpm 版本由 `web/package.json` 的 `packageManager` 钉住。**产物
+`web/dist/` 不入库，类型快照 `web/src/api/schema.d.ts` 入库**（两条相反的规矩：
+前者每次可重建，后者是前后端类型不许漂的契约，CI 会重生成并 `git diff --exit-code`）。
+
 ```sh
 uv run pytest                                # = make test
 uv run python -m src.sync [D=2026-09-18]     # = make sync

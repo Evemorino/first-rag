@@ -39,7 +39,14 @@ outcome, learned}` 轻量转换直并入库，**不走 LLM 蒸馏**（重复蒸�
 
 ## 安装
 
-要求：Python 3.13、Docker（只跑 Qdrant）、方舟 Ark API Key。
+要求：Python 3.13、Docker（只跑 Qdrant）、方舟 Ark API Key；**另需 Node 与 pnpm**
+（只为审阅页 —— Node 版本钉在 `mise.toml`，pnpm 由 `web/package.json` 的
+`packageManager` 钉住。ADR-21 把"跑前端要第二套工具链"记为明确接受的代价）。
+
+**产物与类型是两条相反的规矩**：`web/dist/`（构建产物）和 `web/openapi.json`
+（类型生成器的输入）**不入库**，每次都能重建；而 `web/src/api/schema.d.ts`
+（由后端 openapi.json 生成的类型快照）**入库** —— 它是"前后端类型不许各漂各的"的
+契约，CI 会重新生成一次并 `git diff --exit-code` 要求零差异。
 
 ```sh
 uv sync                                # 项目内 .venv 装依赖
@@ -274,8 +281,8 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   （ask / collect / distill）+ 蒸馏装箱（distill_batches，2026-09-24 随分批一起
   纳入；`secret_patterns` 不加 —— 它只有模块级正则常量、零个函数，生不出变异体），
   见 `pyproject.toml` 的 `only_mutate`。
-  当前基线：2450 个变异体
-  被杀死、344 个存活、19 个无测试覆盖，**变异分数 87.7%**。
+  当前基线：2484 个变异体
+  被杀死、310 个存活、19 个无测试覆盖，**变异分数 88.9%**。
 
   往 `only_mutate` 里加模块时要注意：mutmut 只跑已有 `.meta` 里待检查的变异体，
   **新加的文件不会自动 collect**（它连 `collect` 子命令都没有），加完必须
@@ -442,6 +449,12 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   （mutmut 跳过已有结果，不清就永远看不到新测试的效果）—— **30 只被杀掉**，
   基线 86.6% → **87.7%**（存活 374 → 344）。剩下 4 只逐条判为**等价或不可达**，
   理由如下（不是"还没测"，而是**任何**测试都杀不掉）：
+
+  **2026-09-28 补记（T127）**：一次**全量重建**（`mv mutants /tmp/…`）之后，基线又变成
+  **2484 杀 / 310 活 / 88.9%** —— 比上面那行多 34 杀。原因就是这条注释反复说的那件事：
+  mutmut 的增量缓存会跳过"已有判定"的变异体，而 T111 那 30 只是**点名重跑**（走
+  `mutant_recheck`）判的，另外几只见新测试也本该改判 —— 增量跑批永远看不到。
+  教训不变、代价很小（全量 73 秒）：**改过测试或 only_mutate 之后，别信增量结果。**
 
   - `entries.x__load_payload__mutmut_13`：`NotFoundError(None)` 只换异常里的 id，
     而 API 层 404 的文案是写死的 —— 外部观察不到。

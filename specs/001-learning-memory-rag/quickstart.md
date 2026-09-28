@@ -4,6 +4,8 @@
 
 - Python 3.13、Docker daemon 运行中
 - 方舟 API Key（已订阅，控制台获取）
+- **要看审阅页才需要**：Node（版本见 `mise.toml`）与 pnpm（版本由
+  `web/package.json` 的 `packageManager` 钉住）。纯 CLI 用法不需要它们。
 
 ## 步骤
 
@@ -28,6 +30,12 @@ make log m="一句话快记"        # 手动快记 → notes/inbox.md
 
 # 6. 测试
 make test                    # unit + integration（需 make up 先行）
+
+# 7. 审阅页（v0.9：页面由 web/ 工程构建，产物不入库）
+make ui                      # 构建 web/dist（首次会按 lockfile 装依赖）
+make serve                   # 打开 localhost:8300 —— 列表/筛选/详情/编辑/软删/恢复
+# 想改页面：make ui-dev（Vite HMR，/entries 等代理到 :8300；此时另开 make serve）
+# 改了后端接口/模型：make ui-types 重新生成类型快照（web/src/api/schema.d.ts，入库）
 ```
 
 ## 验一个采集源是否真的通（AC-015 的方法）
