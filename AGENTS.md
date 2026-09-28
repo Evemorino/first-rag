@@ -40,7 +40,9 @@ make probe D=2026-09-25 S=qoder  # 只读采集探针：逐源素材数，不写
 make scope         # 交互式选择采集范围（写 config/scope.json）
 make redistill D=2026-09-18        # 重蒸馏对照（只看 diff）
 make redistill D=2026-09-18 APPLY=1  # 确认后整组替换
-make serve         # FastAPI 薄壳（:8300，health/log/sync/sync-status/ask/ask-stream）
+make serve         # FastAPI 薄壳（:8300：health/log/sync/sync-status/ask/ask-stream）
+                   #   + 审阅页（v0.8）：GET / 、/types 、/entries 、/entries/{id}
+                   #     写接口（本机 + X-Requested-With）：PATCH /entries/{id}、POST .../delete|restore
 make test          # pytest（unit + integration）
 make cov           # 行覆盖率 → coverage.xml
 make crap          # CRAP 指标（复杂度 × 未覆盖度），≥30 视为 crappy
@@ -86,6 +88,8 @@ src/
                    #           workbuddy_ai / trae / trae_work_cn
                    # SQLite 族：opencode / zcode / hermes（一律 mode=ro，见 README 隐私节）
   api/app.py       # FastAPI 薄壳（路由只做校验与调用）
+  api/ui/index.html# 审阅页：零构建单页（无 CDN），由 GET / 返回（v0.8）
+  entries.py       # 条目审阅/修正：生效值、列表详情、人工覆写与软删（v0.8）
 scripts/crap.py    # CRAP 计算器：radon 复杂度 × coverage 覆盖率
 scripts/orphan_check.py  # 孤儿模块：找出零覆盖的 src/ 模块（CRAP 抓不到）
 scripts/lint_layers.py   # 位置与分层门禁：src/ 新目录必须登记 + AST 查 import 方向

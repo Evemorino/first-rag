@@ -21,6 +21,22 @@
 | `source_refs` | list[str]（会话文件标识 / 提交 hash / 快记文件名） | FR-015 |
 | `distill_version` | str（`{model}+rubric@{config_hash 前 8 位}`） | FR-006 |
 | `related` | list[uuid str]，上限 5，双向 | FR-017 |
+| `original_text` | str，**原始蒸馏正文，永不覆盖** | v0.8；FR-030 |
+| `override` | dict 或 null：`{text?, type?, tags?, project?, edited_at}`（只含人工改过的键） | v0.8；FR-028 |
+| `edited_at` | ISO 8601 或 null（最近一次人工编辑时刻） | v0.8；FR-030 |
+| `edited_prev_text` | str 或 null（最近一次编辑**生效前**的正文） | v0.8；FR-030 |
+| `deleted_at` | ISO 8601 或 null | v0.8；FR-029 |
+| `deleted_reason` | str 或 null | v0.8；FR-029 |
+| `rev` | int，从 0 起；每次人工编辑 / 删除 / 恢复 +1（重放**不动**它） | v0.8；乐观并发 |
+
+### v0.8 人工覆写与软删（读取语义）
+
+- **生效值**：`effective(key) = override[key] if key in override else payload[key]`。正文特殊些：生效正文 = `override.text` 存在则用它，否则用 `text`。
+- **可见性**：`visible = (deleted_at is null)`。面向人的读取（列表、`ask`）都带这个条件；页面勾选"显示已删除"或只读诊断工具才看得到已删条目。
+- **重放**：`ingest.upsert` 对新蒸馏结果**不覆盖**已存在点的 `override`；若该点 `deleted_at` 非空则保持删除状态（同 ID = 同一条素材）；`rev` 不因重放变化。
+- **向量**：编辑保存时用**生效正文**重新 embed 并 upsert（ID 不变）；软删**不摘向量**（靠过滤），恢复后即可见可检索。
+- **ID 不变**：以上全部字段都不参与 `uuid5(source|date|content_hash)`。
+- **不新增写入根**：这些字段只进 Qdrant payload（PRD §6 第 4 条）。
 
 ## Raw 快照 `data/raw/YYYY-MM-DD.json`
 

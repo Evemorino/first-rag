@@ -62,7 +62,10 @@ make ask Q="我在 qdrant 上踩过什么坑" ARGS="--type error --since 7d"
 make ask Q="..." ARGS=--stream         # 流式：边生成边打（首字 ~0.7s，不必等整段）
 make scope                             # 勾选采集哪些工具/项目（写 config/scope.json）
 make redistill D=2026-09-18            # 改完蒸馏标准后对照 diff；加 APPLY=1 整组替换
-make serve                             # 按需 API：/health /log /sync /sync/status /ask /ask/stream
+make serve                             # 按需 API + 审阅页：/health /log /sync /sync/status /ask /ask/stream
+                                       #   审阅页 GET /（浏览器打开 localhost:8300）
+                                       #   读 GET /types /entries /entries/{id}
+                                       #   写 PATCH /entries/{id}、POST /entries/{id}/delete|restore
 ```
 
 > `ask` 的额外参数**必须经 `ARGS=` 传**（`ARGS="--type error --since 7d"`）：配方只转发
@@ -89,7 +92,10 @@ CRAP → 孤儿模块。
   都吃这份数据，所以必须排在 pytest 之后。
 - **提交之后还有一个提醒，不算门禁**（`scripts/mutation_reminder.py`）：
   改动若落在变异测试覆盖的文件里，会提示"该重跑 `make mutation` 了"。
-  变异跑一遍半小时，进不了提交门禁，只能靠它 —— 本项目为此漏过两次。
+  变异跑批会**原地改源码**（跑完还原），提交钩子在与源码同时被改的仓库上跑没有
+  意义，所以它进不了提交门禁，只能靠提醒 —— 本项目为此漏过两次。
+  （顺带校正：2026-09-28 实测这批只要 **约 40 秒**（39 变异体/秒），
+  "跑一遍半小时"这个旧印象已作废，真正拦它的是"原地改源码"而不是耗时。）
   它必须设 `verbose: true`：pre-commit 对**成功**的钩子默认不打印输出，
   不开的话提醒是看不见的（装完第一次提交就发现了：只显示一行 Passed）。
 - **分层与规模只管 `src/`**；`example/` 是示例代码，豁免质量钩子。
@@ -230,15 +236,15 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
 
 - **CRAP** 把复杂度和覆盖率乘在一起：复杂度 23、覆盖 74% 的函数 CRAP 是 32.8，
   一眼看出该拆还是该补测试。当前基线：函数内语句
-  覆盖 90.7%（口径只算函数体内语句，与 pytest 报的全量行覆盖 92% 不是一回事），
-  241 个函数，均值 4.9，最高 21.1，**0 个 crappy**（`config.py:_validate`
+  覆盖 91.2%（口径只算函数体内语句，与 pytest 报的全量行覆盖不是一回事），
+  272 个函数，均值 4.8，最高 21.1，**0 个 crappy**（`config.py:_validate`
   按 section 拆成 6 个小函数；`collect._cap` / `redistill._fetch_day_entries` /
   `claude_code` 错误提取补测试到 100% 覆盖；2026-09-25 从 `ask.py` 拆出的
   `ask_expand.py` 进来时是 100% 覆盖）。
   **这串数字是手写的，没有门禁盯着**——`make crap` 只保证"没有 crappy 函数"，
   不会因为你改了代码而告诉你 README 过期了（变异基线有 `baseline_check.py`，
   CRAP 没有对应的东西）。数字对不上时以 `make crap` 的输出为准。
-  用例数过去同样没人看着：**893 个（892 passed + 1 skipped，2026-09-28 实测
+  用例数过去同样没人看着：**965 个（963 passed + 1 skipped，2026-09-28 实测
   `pytest -q`）**——在本轮核对前它停在"844"上，正是这条"没有门禁"的后果。现在
   `make baseline` 会核对这一段的**收集数**（括号里那两个数是那天的实测快照；
   收集数一变就得重测一遍，把三个数一起改）。
@@ -254,13 +260,30 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   （ask / collect / distill）+ 蒸馏装箱（distill_batches，2026-09-24 随分批一起
   纳入；`secret_patterns` 不加 —— 它只有模块级正则常量、零个函数，生不出变异体），
   见 `pyproject.toml` 的 `only_mutate`。
-  当前基线：1919 个变异体
-  被杀死、246 个存活、14 个无测试覆盖，**变异分数 88.6%**。
+  当前基线：2420 个变异体
+  被杀死、374 个存活、19 个无测试覆盖，**变异分数 86.6%**。
 
   往 `only_mutate` 里加模块时要注意：mutmut 只跑已有 `.meta` 里待检查的变异体，
   **新加的文件不会自动 collect**（它连 `collect` 子命令都没有），加完必须
   `mv mutants /tmp/…` 完整重建一遍才会真正生效 —— 否则就是"配置写了但没跑"，
   又是一个只有数字、没有实质的信号。
+  **v0.8 批次（2026-09-28）：已重跑。** `src/entries.py` 加进 `only_mutate`、
+  `mv mutants /tmp/…` 整个重建、跑批、`--update` 写回 —— 四步一起做的。
+  数字从 88.6% 掉到 **86.6%**：分母 2179 → 2813、存活 246 → 374，涨的主要是新代码
+  （`entries.py` 的覆写/软删/邻居分支 + `ingest`/`ask` 的改动）**还没按分族逐条看过**，
+  见本节末尾的待办说明 —— 分数下降本身不算退化，没看过才算欠账。
+  同批修掉了**两个一直没被发现的问题**（都因为"变异不在门禁里"）：
+  ① `make mutation` **自 v0.7.18 起就是坏的** —— `scripts/batch_edge_probe.py` 在
+  import 时用 `inspect.signature` 读 `build_related_edges` 的形参默认值，而 mutmut 会
+  把被变异的函数包进 trampoline（`__kwdefaults__` 是 `None`），于是它在 stats 阶段就
+  崩，整条命令 4 秒退出，而 README 一直写着"约半小时"；已改为读**源码 AST**（与
+  trampoline 无关）。② v0.8 新加的那条"目标必须进文档"断言要读 `AGENTS.md`，而它不在
+  `also_copy` 里 —— 同一个坑第**五**次踩；已补进名单，并把兜底检查（`rg -n 'REPO_ROOT / ' tests/`）
+  写在 `pyproject.toml` 那条注释里。
+  **顺带校正一条过期认知**：实测这批跑得快得多 —— mutmut 3 用 trampoline +
+  `mutmut-stats.json` 在同一进程内切变异体，实测 **39 变异体/秒**，2813 只约 40 秒
+  （上面"约半小时"那句已作废）。所以"跑批很贵"不再是"不进提交门禁"的理由，
+  真正拦它的是**它会原地改源码**（下面的坑三）。
 
   同族的**第二个**坑（2026-09-26 实测撞上）：**给一个既有测试加断言去覆盖一个新
   函数，映射不会重学。** mutmut 只在出现**新测试名**时才增量重采"函数 → 覆盖它的
@@ -273,8 +296,8 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   这条判据现在有门禁兜着：`make mutation` 收尾的 `baseline_check.py` 会挑出"整个
   函数的变异体全被判 no tests"的函数，跟它的 `KNOWN_NO_TESTS` 登记表比对 —— 不在
   表里就红，并把上面那两条处置路径直接打出来；`--update` 也拒绝在这种状态下写数字
-  （映射没判完，那份分数等于没核对过）。登记表里只有两条，都是真的从未被执行过的
-  工厂：`ask_expand._client` / `ingest._client`。
+  （映射没判完，那份分数等于没核对过）。登记表里现在三条，都是真的从未被执行过的
+  工厂：`ask_expand._client` / `ingest._client` / `entries._client`。
   **名字认不出来也红**：分组全空会让这条检查永远报"没问题"，而门禁最坏的死法是
   一直绿着。
 
@@ -374,6 +397,25 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   与上一轮逐项相同（`mutant_recheck.py --summary` 复算：未判 95 / 纯文案 73 /
   关键字 29 / `ensure_ascii` 22 / 排版编码 8 / 平台 7 / 文件名大小写 7 / 程序读的字符串 3 /
   边界 2）。
+
+  **2026-09-28 第五次跑批（v0.8，审阅页与条目修正）**：**被杀 2420 / 存活 374 /
+  无测试 19 → 86.6%**（分母 2179 → 2813）。分母涨 634、存活涨 128 —— 新增的
+  全落在这版代码上：`entries.py`（覆写层/软删/同日邻居）、`ingest` 新拆出的三个
+  helper、`ask` 与 `ask_expand` 的可见性闸、以及 `batch_edge_probe.py` 那处
+  "从 `inspect` 改成读源码 AST"的阈值（脚本不在变异范围，但它的测试在 `tests/` 里）。
+  `mutant_recheck.py --summary` 分族：**未判 141**（↑95）/ **纯文案 83**（↑73）/
+  **关键字·默认值·计算值 56**（↑29）/ **程序读的字符串 46**（↑3）/
+  `ensure_ascii` 22 / 快照排版与编码 8 / 平台不可达 7 / 文件名大小写 7 /
+  边界与比较符 4（↑2）。
+  两个跳得最猛的族都有解释：**未判 141** 是新代码"改了形状但没人测"的候选池；
+  **程序读的字符串 46** 大多是新的 payload 键名（`override` / `deleted_at` /
+  `deleted_reason` / `rev` / `prev_id` / `next_id` …）—— 键名改错会有测试红，
+  但是否**每条**都被盯住，只能靠 `--run` 判。
+  **逐条判决（`--run`）本轮没跑**：该工具有硬性前置 —— `src/` 工作区必须干净
+  （它会真写源码再按字节还原），而 v0.8 的改动**还没提交**。`git stash` 在这里
+  **不是**出路：它会把 `src/` 退回 v0.8 之前，而 `mutants/` 是 v0.8 建的，两边
+  版本对不上，判出来的结论没有意义。**所以这 374 条目前只有族归属、没有判决**，
+  别读成"已看过没问题"。
 
   **上面这些族计数由 `scripts/mutant_recheck.py --summary` 生成**（入库工具，不再是
   我一次性探针里的临时规则）：它读 `mutants/src/*.meta` 挑出存活变异体，从插桩副本里

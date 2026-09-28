@@ -6,7 +6,7 @@
 
 ## Summary
 
-个人学习记忆系统：插件化采集多个 AI 工具的当日会话（v0.1 为 4 个源，PRD v0.7 扩到 11 个，见"v0.7 采集面扩展"节）→ LLM 蒸馏为结构化条目 → Qdrant 幂等入库（含关联边）→ 过滤式语义检索 + 引用式回答。技术路线：纯函数核心层 + FastAPI 薄壳 + 本地 Docker Qdrant + 方舟 Ark API（OpenAI 兼容）。交付按纵切里程碑推进（PRD FR-002 Q2-A / LG-002）。
+个人学习记忆系统：插件化采集多个 AI 工具的当日会话（v0.1 为 4 个源，PRD v0.7 扩到 11 个，见"v0.7 采集面扩展"节）→ LLM 蒸馏为结构化条目 → Qdrant 幂等入库（含关联边）→ 过滤式语义检索 + 引用式回答；v0.8 再补一层**本机审阅页**（浏览 + 人工编辑 + 软删除），把"写错了只能手工连库改"这条堵上（PRD US-7，见"v0.8 审阅页与条目修正"节）。技术路线：纯函数核心层 + FastAPI 薄壳 + 本地 Docker Qdrant + 方舟 Ark API（OpenAI 兼容）。交付按纵切里程碑推进（PRD FR-002 Q2-A / LG-002）。
 
 ## Technical Context
 
@@ -16,6 +16,7 @@
 - **Testing**: pytest（unit + integration，integration 需本地 Qdrant 运行）
 - **Target Platform**: macOS 本机，单用户
 - **Project Type**: CLI 工具 + 按需 API 服务（非守护进程，PRD ADR-4）
+- **v0.8 新增**: 本机审阅页 —— 零构建静态单页，随 API 进程一起提供；**不引入新依赖、不新增常驻服务**（PRD NFR-008 / NFR-009）
 - **Performance Goals**: 当日 sync ≤5 分钟（NFR-006）。**计时按天**：2026-09-26 最忙日 09-25 全源端到端实测 **248.7s / 300s（83%）**，未突破（PRD v0.7.3 补测；4-源时代的 215.9s 口径已作废，见 PRD §9 风险表）；ask 单次 ≤10 秒（2026-09-25 实测 5.9s 达标；流式首字 0.7s）
 - **Constraints**: 写入仅限 `data/`、`notes/`（宪法 V，NON-NEGOTIABLE）；密钥走 `.env`
 - **Scale/Scope**: 单用户；日蒸馏输出 5–10K 字符；条目总量预期千级
@@ -126,6 +127,7 @@ first-rag/
 | M8 | 入口完备 | make scope + FastAPI 四端点 | AC-007、AC-001 完整 |
 | M9 | 收尾 | AGENTS.md / README / 全 AC 回归 + **Dogfood ②** | AC-011 及全量 |
 | M10 | **v0.7 采集面扩展** | 四步，顺序不可换（详见下节）：① `trae`→`trae_work_cn` 迁移 ② SQLite 只读机械门禁 ③ A 族 4 插件 ④ B 族 3 插件 + 逐源计时 | AC-015、AC-016、AC-017 |
+| M11 | **v0.8 审阅页与条目修正** | 三片纵切（LG-002）：① 只读审阅页（列表 + 详情，纯读）② 条目编辑（覆写层）+ 软删除与恢复 + 留痕 ③ 页面打磨与人工冒烟 | AC-018~AC-021 |
 
 ## v0.7 采集面扩展（M10）
 
@@ -170,6 +172,62 @@ B 族三个插件都要读 SQLite，而普通 `sqlite3.connect()` 会在源目�
 - **按天计时**：真实 sync 把当天全源素材合并后统一分批，成本不按源可加——**逐源计时从原理上测不出总预算**（PRD v0.7.3 订正）。已实测 **248.7s / 300s**（2026-09-26，最忙日 09-25，1,928,545 字符 / 18 批 / 3 轮）；单源耗时只作诊断记录，不作验收尺子。当日计时逼近 300s 时按 PRD §9 的顺序处置（源级 scope → 分片/水位 → 重议预算），**不得无实测就放宽预算**。
 - **不动历史工件**：`analysis.md`、`checklists/`、已发布的变更记录行记录的是当时的事实，不追改。
 
+## v0.8 审阅页与条目修正（M11）
+
+**目标**：堵掉"库里写错了只能手工连 Qdrant"。本机审阅页浏览 + 条目人工编辑 + 软删除与恢复 + 留痕（PRD US-7 / FR-026~FR-030 / NFR-009~011 / AC-018~021）。逐题决策与理由见 `specs/001-learning-memory-rag/v08-decisions.md`。
+
+### 设计要点
+
+1. **人工编辑走覆写层，不动 ID**。条目标识仍是 `uuid5(source|date|content_hash)`；人工修改另存：`override`（正文/类型/标签/项目）、`edited_at`、`edited_prev_text`（最近一次变更前正文）、`original_text`（原始蒸馏正文，永久保留）。
+   - 所有**面向人的读取路径**（列表、详情、检索上下文）取覆写值，缺省回落到原始字段；**ID / `related` / `source_refs` / `date` / `source` / `distill_version` 一律不变**。
+   - 保存时**用覆写正文重算该条向量**——否则会出现"显示新文字、命中靠旧语义"。Ark 不可用则拒绝保存（不做"先存文本、后补向量"）。
+2. **软删除靠 payload 过滤**：写 `deleted_at`（+ 可选 `deleted_reason`）。面向人的路径（列表、`ask`）加"不存在 `deleted_at`"条件；只读诊断（`rerun-overlap` / `batch-edges` / 重蒸馏 diff）**不过滤**并标注"已删"。
+   - `related` 指向已软删条目时，检索期忽略该边；**不做级联删边**——那会把可恢复性变成不可恢复。
+3. **同日重放不得冲掉人工值**（本版最容易踩的坑：原始快照还在，重放必然再蒸出同一条素材）：`ingest.upsert` 合并 payload 时 MUST 保留 `override`/`deleted_at`/`edited_at` 等人工字段；重放产生的新条目若与已软删条目**同 ID**，保持删除状态。
+4. **页面零构建、只绑本机**：`GET /` 返回随仓库走的静态单页（HTML + CSS + 原生 JS，无 CDN、无 npm）；详情用同页右侧面板 + `#/entry/<id>` 锚点。不新增常驻服务，NFR-008 仍成立。
+   - 写接口校验 `Origin`/`Host` 为本机并要求自定义头（`X-Requested-With`）——本机无鉴权服务唯一的实际风险面就是"浏览器里别的页面替你发写请求"。
+
+### 界面与接口契约（新增）
+
+| 入口 | 方法 | 作用 |
+|---|---|---|
+| `/` | GET | 审阅页（静态单页，浏览器打开即用） |
+| `/types` | GET | 配置里的类型枚举（供筛选与编辑下拉，页面不硬编码类型表） |
+| `/entries` | GET | 列表：`date_from` / `date_to` / `type` / `project` / `source` / `include_deleted` / `page` |
+| `/entries/{id}` | GET | 详情：当前值 + 原始正文 + 留痕 + 关联边（标注"基于原始蒸馏正文"） |
+| `/entries/{id}` | PATCH | 人工编辑（正文/类型/标签/项目 + `rev` 乐观并发） |
+| `/entries/{id}/delete` | POST | 软删除（原因可选） |
+| `/entries/{id}/restore` | POST | 恢复 |
+
+- 路由层只做参数校验与转发（宪法 II）；核心逻辑放 `src/entries.py`，API 不写业务规则。
+- 编辑/删除/恢复返回新 `rev`；`rev` 不符返回 409，提示刷新（两个标签页同时改同一条时不静默丢改动）。
+
+### 目录与门禁影响
+
+- 新增核心模块 `src/entries.py`；页面静态资源放 `src/api/ui/`。
+- **新增 `src/` 目录必须登记进 `scripts/lint_layers.py` 的 `DIRECTORIES`**（宪法硬约束，兜底是拒绝）；静态资源为只读，预计不新增 `WRITE_SITES` 登记项，若新增则同步登记。
+- 变异范围：`src/entries.py` 在 `src/` 下，进 mutmut 覆盖；HTML/CSS/JS 不在变异范围，由契约测试守。
+
+### 测试策略（v0.8）
+
+- **必须自动化**（真插库、真重放，内嵌 Qdrant fixture）：AC-019（编辑不换 ID + 重放不覆盖人工值）、AC-020（软删后重放不复活 + 恢复可用）、AC-021（留痕不被重放冲掉）。
+- **契约自动化**：AC-018 的两条机械面 —— `GET /` 返回 200 且页面内**不含任何外部 URL**；服务监听地址为 `127.0.0.1`（读 app 配置断言，不起真进程）。
+- **人工冒烟一次**：浏览器打开页面 → 点开条目 → 改一条 → 删一条 → 恢复一条（结果记进 quickstart 的验收段）。
+
+### Constitution Check（v0.8 复核）
+
+| 原则 | v0.8 的符合方式 | 状态 |
+|---|---|---|
+| I 单一事实来源 | 逐条引用 PRD FR-026~FR-030 / NFR-009~011 / AC-018~021 | ✓ |
+| II 纯核薄壳 | 核心逻辑 `src/entries.py`；`api/app.py` 只校验与转发 | ✓ |
+| III 配置驱动扩展 | 类型下拉读 `config/schema.json`，不硬编码类型表 | ✓ |
+| IV 幂等与确定性 | 覆写不动 ID；重放不复活软删、不覆盖人工值（NFR-011） | ✓ |
+| V 写入边界（NON-NEGOTIABLE） | 新字段只进 Qdrant payload，不新增写入根；新 `src/` 目录登记进 `DIRECTORIES` | ✓ |
+| VI 技术克制与可逆 | 零构建单页、无新依赖、无新常驻服务 | ✓ |
+| VII 学习优先 | 纵切三片（只读 → 编辑/软删 → 打磨）；LG-005 的决策经用户 2026-09-28 授权采用推荐值 | ✓ |
+
+**Complexity Tracking（v0.8）**：无违宪项。唯一需要记录的取舍是"覆写层"引入的字段重叠（当前值 vs 原始值）——用 `original_text` 永久保留 + 详情页对照展示化解，不用新表。
+
 ## Module Contracts（摘要，全文见 contracts/plugin-contract.md）
 
 - `ark_client.embed(texts: list[str]) -> list[list[float]]`；`chat(messages, json_mode=False, max_tokens=None, thinking=True) -> str`
@@ -199,3 +257,6 @@ B 族三个插件都要读 SQLite，而普通 `sqlite3.connect()` 会在源目�
 | **v0.7**：SQLite 插件把 `-wal` 写进源目录 | 机械门禁（`write_boundary_check` 判非 `mode=ro` 的 `connect()`）+ `gate_selftest` 植入违规用例；另有一条"跑完源目录文件列表不变"的断言 |
 | **v0.7**：11 源撑破 NFR-006 的 300s | **按天计时**（逐源计时测不出总预算，见 PRD v0.7.3）；逼近即按 PRD §9 处置（源级 scope → 分片/水位 → 重议预算），不放宽无实测的预算 |
 | **v0.7**：hermes 插件"通过"实际是空转 | 测试显式标注"未经真实数据验证"；补验前不得以其声称任何 AC 通过 |
+| **v0.8**：人工编辑被同日重放冲掉 / 软删条目复活 | 覆写层与自动字段分离 + 检索期过滤，由 AC-019/AC-020 的自动化用例（真跑重放）钉住；这是本版最可能踩的坑 |
+| **v0.8**：无鉴权页面被浏览器里的其他页面驱动（跨站写请求） | 写接口校验 `Origin`/`Host` + 自定义头；页面只绑 `127.0.0.1`（NFR-010） |
+| **v0.8**：覆写让"库里显示的"不再等于"蒸馏产出的"，将来追溯对不上 | `original_text` 永久保留、详情页对照展示；检索上下文用当前值并带"已编辑"标记 |
