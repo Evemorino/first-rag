@@ -247,12 +247,13 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   **这串数字是手写的，没有门禁盯着**——`make crap` 只保证"没有 crappy 函数"，
   不会因为你改了代码而告诉你 README 过期了（变异基线有 `baseline_check.py`，
   CRAP 没有对应的东西）。数字对不上时以 `make crap` 的输出为准。
-  用例数过去同样没人看着：**976 个（975 passed + 1 skipped，2026-09-28 实测
+  用例数过去同样没人看着：**981 个（980 passed + 1 skipped，2026-09-28 实测
   `pytest -q`）**——**这是 Python 侧的数**；在本轮核对前它停在"844"上，正是这条
   "没有门禁"的后果。现在
   `make baseline` 会核对这一段的**收集数**（括号里那两个数是那天的实测快照；
   收集数一变就得重测一遍，把三个数一起改）。**前端另有 10 条 Vitest + 1 条 Playwright
-  e2e**（`pnpm --dir web test` / `pnpm --dir web e2e`）——两组分开报，免得一个总数
+  e2e**（`pnpm --dir web test` / `pnpm --dir web e2e`；e2e 自带探针数据与假 Ark，
+  不联网、不花钱）——两组分开报，免得一个总数
   被读成"已经含前端"（v0.9 起；`baseline` 只核对 Python 那个数）。
 - **孤儿模块**（`scripts/orphan_check.py`）补的是 CRAP 的盲区：CRAP 问的是
   "复杂的代码测够了吗"，问不了"这个模块有人碰过吗"。一个只有简单函数

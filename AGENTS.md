@@ -106,6 +106,8 @@ scripts/baseline_check.py      # 文档基线核对：mutants/ 真实结果 vs R
 scripts/gate_selftest.py       # 门禁自检：给 15 个钩子各植入一个违规，断言它真会红
 scripts/rerun_overlap_report.py # 同日重跑重叠度（只读 Qdrant）：NN 分布 vs novelty_threshold
 scripts/batch_edge_probe.py  # 跨批关联边（只读 Qdrant）：同批/跨批/跨运行三组的边有没有（ADR-12 观测项）
+scripts/fake_ark_server.py   # 假 Ark（OpenAI-compatible embeddings 桩）：e2e 冒烟用，
+                             # 由 web/playwright.config.ts 的 webServer 拉起，不让冒烟打真 Ark
 tests/mutmut_compat.py  # mutmut 3.x 对 `src.` 包名的兼容补丁（见文件头）
 config/            # schema.json（类型/rubric/检索/trae 映射/保留期）、repos.txt（git 采集仓库清单，
                    # 一行一个绝对路径；`~` 不展开）；scope.json 只在人跑过 `make scope` 后才存在

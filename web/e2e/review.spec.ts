@@ -1,17 +1,19 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
 
+import { EMBED_DIM } from "../playwright.config";
+
 /**
  * AC-018~AC-021 的 8 步验收（T119）。
  *
  * **自带探针数据**：直接往 Qdrant upsert 一条测试点，跑完删掉 —— 全程不碰真库里的
  * 条目（软删可恢复也不该拿来当"反正能恢复"的借口）。"重放后人工值仍在"那一步由
  * 后端集成测试（tests/integration/test_entries_replay.py）覆盖，这里不重复跑 sync。
+ *
+ * **也自带假 Ark**（`scripts/fake_ark_server.py`，由 playwright.config 的 webServer 拉起）：
+ * 第 ④ 步的编辑会重新嵌入正文，而真调用属于 `make embed-test` 的射程（AC-001）。
  */
 const QDRANT = "http://127.0.0.1:6333";
 const COLLECTION = "learning_memory";
-// AC-001 实测的嵌入维度（doubao-embedding-vision → 2048）。只在**集合不存在**时用到：
-// 干净环境里没有 `make embed-test`（它要真调 Ark，CI 没有密钥），集合得自己建。
-const EMBED_DIM = 2048;
 const PROBE_ID = "019c0000-0000-7000-8000-00000000e2e2";
 const PROBE_TEXT = "e2e 探针条目（Playwright 自己 upsert 的，跑完就删）";
 const EDITED_TEXT = "e2e 探针条目 —— 已被人工改过";
@@ -44,7 +46,7 @@ test.beforeAll(async ({ request }) => {
         points: [
           {
             id: PROBE_ID,
-            vector: Array.from({ length: 2048 }, () => 0),
+            vector: Array.from({ length: EMBED_DIM }, () => 0),
             payload: {
               text: PROBE_TEXT,
               date: "2099-01-01", // 未来日期 → 默认列表里排第一，便于定位
