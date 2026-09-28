@@ -9,12 +9,10 @@ import { splitTags } from "../api/params";
 import { useEditEntry } from "../queries/mutations";
 import { useTypes } from "../queries/entries";
 import { useToasts } from "../store/toast";
+import { BUTTON, CONTROL, META } from "../ui";
+import { EDITOR_ID } from "./Shortcuts";
 
 type Draft = { text: string; type: string; tags: string; project: string };
-
-const CONTROL =
-  "rounded border border-slate-300 px-2 py-1 text-sm text-slate-900 " +
-  "dark:border-slate-600 dark:bg-slate-900";
 
 function draftOf(view: EntryDetailView): Draft {
   return {
@@ -37,6 +35,17 @@ export function payloadOf(view: EntryDetailView, draft: Draft): EditPayload {
     tags: splitTags(draft.tags),
     project: draft.project,
   };
+}
+
+function SaveRow({ pending }: { pending: boolean }) {
+  return (
+    <div className="flex items-center gap-2">
+      <button className={BUTTON} disabled={pending} type="submit">
+        保存
+      </button>
+      <span className={META}>{pending ? "保存中…" : "Esc 可松开焦点"}</span>
+    </div>
+  );
 }
 
 /**
@@ -77,10 +86,13 @@ export function EntryEditor({ view }: { view: EntryDetailView }) {
         save();
       }}
     >
+      <h3 className={`${META} font-medium`}>人工修正（保存后页面显示覆写版本）</h3>
       <textarea
+        id={EDITOR_ID}
         className={`w-full ${CONTROL}`}
         rows={4}
         value={draft.text}
+        aria-label="正文"
         onChange={(event) => setDraft({ ...draft, text: event.target.value })}
       />
       <div className="flex gap-2">
@@ -111,16 +123,7 @@ export function EntryEditor({ view }: { view: EntryDetailView }) {
           onChange={(event) => setDraft({ ...draft, project: event.target.value })}
         />
       </div>
-      <div className="flex items-center gap-2">
-        <button
-          className="rounded border border-slate-300 px-3 py-1 text-sm hover:border-blue-500 hover:text-blue-600 disabled:opacity-40 dark:border-slate-600"
-          disabled={edit.isPending}
-          type="submit"
-        >
-          保存
-        </button>
-        <span className="text-xs text-slate-500">{edit.isPending && "保存中…"}</span>
-      </div>
+      <SaveRow pending={edit.isPending} />
     </form>
   );
 }

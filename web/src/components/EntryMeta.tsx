@@ -1,10 +1,11 @@
 import type { EntryDetailView } from "../api/client";
+import { META } from "../ui";
 
 function Row({ label, value }: { label: string; value?: string | null }) {
   if (!value) return null;
   return (
     <div className="flex gap-3 text-sm">
-      <dt className="w-16 shrink-0 text-xs text-slate-500">{label}</dt>
+      <dt className={`w-16 shrink-0 ${META}`}>{label}</dt>
       <dd className="min-w-0 break-words">{value}</dd>
     </div>
   );
@@ -38,7 +39,7 @@ export function EntryMeta({ view }: { view: EntryDetailView }) {
         <Row label="原因" value={view.deleted_reason} />
         <Row label="版本" value={String(view.rev)} />
       </dl>
-      <p className="text-xs text-slate-500">
+      <p className={META}>
         关联边基于原始蒸馏正文计算，不随人工编辑变化。
       </p>
     </>

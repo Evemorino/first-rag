@@ -2,10 +2,7 @@ import { type ChangeEvent, useState } from "react";
 
 import { useTypes } from "../queries/entries";
 import { emptyFilters, type Filters, useUi } from "../store/ui";
-
-const CONTROL =
-  "rounded border border-slate-300 px-2 py-1 text-sm text-slate-900 " +
-  "dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100";
+import { BUTTON, CONTROL, META } from "../ui";
 
 type TextFilterProps = {
   label: string;
@@ -16,7 +13,7 @@ type TextFilterProps = {
 
 function TextFilter({ label, placeholder, value, onChange }: TextFilterProps) {
   return (
-    <label className="flex items-center gap-1 text-xs text-slate-500">
+    <label className={`flex items-center gap-1 ${META}`}>
       {label}
       <input
         className={`w-28 ${CONTROL}`}
@@ -56,7 +53,7 @@ export function FilterForm() {
         onChange={(date_from) => setDraft({ ...draft, date_from })} />
       <TextFilter label="止" placeholder="2026-09-30" value={draft.date_to}
         onChange={(date_to) => setDraft({ ...draft, date_to })} />
-      <label className="flex items-center gap-1 text-xs text-slate-500">
+      <label className={`flex items-center gap-1 ${META}`}>
         类型
         <select className={CONTROL} value={draft.type} onChange={pickType}>
           <option value="">全部</option>
@@ -71,7 +68,7 @@ export function FilterForm() {
         onChange={(project) => setDraft({ ...draft, project })} />
       <TextFilter label="来源" placeholder="claude_code" value={draft.source}
         onChange={(source) => setDraft({ ...draft, source })} />
-      <label className="flex items-center gap-1 text-xs text-slate-500">
+      <label className={`flex items-center gap-1 ${META}`}>
         <input
           type="checkbox"
           checked={draft.include_deleted}
@@ -82,13 +79,13 @@ export function FilterForm() {
         显示已删除
       </label>
       <button
-        className="rounded border border-slate-300 px-3 py-1 text-sm hover:border-blue-500 hover:text-blue-600 dark:border-slate-600"
+        className={BUTTON}
         type="submit"
       >
         查询
       </button>
       <button
-        className="text-xs text-slate-500 underline"
+        className={`${META} underline`}
         type="button"
         onClick={() => {
           setDraft(emptyFilters);

@@ -1,5 +1,34 @@
 @import "tailwindcss";
 
+/* 暗色改成 **class 制**（T125）：Tailwind v4 的 `dark:` 默认跟 prefers-color-scheme，
+   那样只能跟随系统、没法手动切 —— 而"跟随系统"本身也要保留，所以主题有三档：
+   system / light / dark（见 store/theme.ts）。 */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* 让浏览器原生控件（滚动条、下拉、输入框）也跟着主题走 —— 少了这行，暗色页面里
+   会留着一条亮白色的滚动条。 */
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
+}
+
+:root.dark {
+  color-scheme: dark;
+}
+
+/* 焦点环只用 :focus-visible：键盘操作才出现，鼠标点击不闪一下。
+   没有它的话"键盘可达"只是名义上的 —— 看不到自己走到哪儿了。 */
+:focus-visible {
+  outline: 2px solid var(--color-blue-500, #3b82f6);
+  outline-offset: 2px;
+}
+
+/* 尊重系统的"减少动态效果"：骨架的 pulse、toast 的淡入都该停。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

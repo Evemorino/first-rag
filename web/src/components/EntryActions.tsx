@@ -1,10 +1,7 @@
 import { describeWriteError, type EntryDetailView } from "../api/client";
 import { useDeleteEntry, useRestoreEntry } from "../queries/mutations";
 import { useToasts } from "../store/toast";
-
-const BUTTON =
-  "rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-40 " +
-  "dark:border-slate-600";
+import { BUTTON, BUTTON_DANGER, META } from "../ui";
 
 /**
  * 软删 / 恢复（FR-029 / ADR-19）。
@@ -51,12 +48,12 @@ export function EntryActions({ view }: { view: EntryDetailView }) {
           恢复
         </button>
       ) : (
-        <button className={`${BUTTON} text-red-700`} disabled={remove.isPending}
+        <button className={BUTTON_DANGER} disabled={remove.isPending}
           type="button" onClick={onDelete}>
           删除
         </button>
       )}
-      <span className="text-xs text-slate-500">
+      <span className={META}>
         {remove.isPending && "删除中…"}
         {restore.isPending && "恢复中…"}
       </span>

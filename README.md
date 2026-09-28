@@ -265,7 +265,7 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   `pytest -q`）**——**这是 Python 侧的数**；在本轮核对前它停在"844"上，正是这条
   "没有门禁"的后果。现在
   `make baseline` 会核对这一段的**收集数**（括号里那两个数是那天的实测快照；
-  收集数一变就得重测一遍，把三个数一起改）。**前端另有 20 条 Vitest + 1 条 Playwright
+  收集数一变就得重测一遍，把三个数一起改）。**前端另有 36 条 Vitest + 1 条 Playwright
   e2e**（`pnpm --dir web test` / `pnpm --dir web e2e`；e2e 自带探针数据与假 Ark，
   不联网、不花钱）——两组分开报，免得一个总数
   被读成"已经含前端"（v0.9 起；`baseline` 只核对 Python 那个数）。
