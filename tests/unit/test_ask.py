@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+from qdrant_client.models import FieldCondition, IsEmptyCondition
 
 from src import ask, ask_expand, config, similarity
 from src.similarity import Hit
@@ -71,7 +72,7 @@ def test_build_filters_threads_today_into_relative_dates():
     """
     filters = ask.build_filters(
         since="7d", until="1d", today=date(2026, 9, 20))
-    date_range = {c.key: c for c in filters.must}["date"].range
+    date_range = {c.key: c for c in filters.must if isinstance(c, FieldCondition)}["date"].range
     assert date_range.gte.date() == date(2026, 9, 13)
     assert date_range.lte.date() == date(2026, 9, 19)
 
@@ -80,15 +81,23 @@ def test_build_filters_type_project_and_range():
     filters = ask.build_filters(
         type="error", project="first-rag",
         since="2026-09-01", until="7d", today=date(2026, 9, 20))
-    conditions = {c.key: c for c in filters.must}
+    conditions = {c.key: c for c in filters.must if isinstance(c, FieldCondition)}
     assert conditions["type"].match.value == "error"
     assert conditions["project"].match.value == "first-rag"
     assert conditions["date"].range.gte.date() == date(2026, 9, 1)
     assert conditions["date"].range.lte.date() == date(2026, 9, 13)
 
 
-def test_build_filters_none_when_no_filters():
-    assert ask.build_filters() is None
+def test_build_filters_always_carries_the_visibility_guard():
+    """软删条目对检索必须一律不可见 —— 这道闸与用户传没传过滤条件无关（FR-029）。
+
+    改前这条断言是 `build_filters() is None`（"没条件就不给过滤器"）；v0.8 起
+    软删除靠 payload 过滤实现，所以空条件时也必须给一个只含可见性闸的过滤器。
+    """
+    filters = ask.build_filters()
+    assert filters is not None
+    assert [type(c) for c in filters.must] == [IsEmptyCondition]
+    assert filters.must[0].is_empty.key == "deleted_at"
 
 
 # --- _cosine：邻居打分的核心数学 ---
@@ -223,7 +232,11 @@ def test_query_forwards_every_filter_into_the_search(pipeline_fakes, schema):
     ask.query("问题", type="error", project="first-rag",
               since="2026-09-01", until="2026-09-30")
 
-    conditions = {c.key: c for c in pipeline_fakes["filters"].must}
+    conditions = {
+        c.key: c
+        for c in pipeline_fakes["filters"].must
+        if isinstance(c, FieldCondition)
+    }
     assert conditions["type"].match.value == "error"
     assert conditions["project"].match.value == "first-rag"
     assert conditions["date"].range.gte.date() == date(2026, 9, 1)

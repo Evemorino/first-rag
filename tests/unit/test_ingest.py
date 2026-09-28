@@ -31,9 +31,12 @@ def make_entry(**overrides):
 
 
 class FakeQdrantClient:
-    def __init__(self, *, exists: bool = False, points: list | None = None):
+    def __init__(self, *, exists: bool = False, points: list | None = None,
+                 payloads: dict | None = None):
         self.exists = exists
         self.points = points or []
+        # 既有 point 的 payload：重放保护要读它（T101）。
+        self.payloads = payloads or {}
         self.calls = []
         self.queries = []
         self.set_payload_calls = []
@@ -52,6 +55,13 @@ class FakeQdrantClient:
     def set_payload(self, **kwargs):
         self.set_payload_calls.append(kwargs)
         return SimpleNamespace(operation_id=1)
+
+    def retrieve(self, **kwargs):
+        return [
+            SimpleNamespace(id=ident, payload=dict(self.payloads[ident]))
+            for ident in (str(i) for i in kwargs["ids"])
+            if ident in self.payloads
+        ]
 
 
 @pytest.fixture
@@ -179,8 +189,56 @@ def test_upsert_deduplicates_same_identity_within_one_batch(fake_qdrant, fake_em
     report = ingest.upsert([first, duplicate])
 
     assert report.upserted == 1
-    assert fake_embed == [[first.text, duplicate.text]]
+    # 去重挪到了 embedding **之前**（2026-09-28，T101 顺带）：同一身份的重复文本
+    # 产不出第二个点，原来却要为它多调一次 Ark —— 少一次调用，结果不变。
+    assert fake_embed == [[first.text]]
     assert len(fake_qdrant.calls[0]["points"]) == 1
+
+
+# --- 重放保护（T101 / ADR-18 / ADR-19 / NFR-011）---
+
+
+def test_rerun_preserves_human_fields(fake_embed, monkeypatch):
+    """重放更新自动字段，但**不许**碰人工留下的东西（覆写、留痕、软删标记）。"""
+    entry = make_entry()
+    point_id = str(ids.point_id(entry.source, entry.date, entry.text))
+    human = {
+        "override": {"text": "人工版正文", "type": "idea"},
+        "original_text": entry.text,
+        "edited_at": "2026-09-28T12:00:00+00:00",
+        "edited_prev_text": entry.text,
+        "deleted_at": "2026-09-28T13:00:00+00:00",
+        "deleted_reason": "蒸馏错了",
+        "rev": 3,
+    }
+    client = FakeQdrantClient(
+        exists=True,
+        points=[SimpleNamespace(id=point_id, score=1.0, payload={})],
+        payloads={point_id: dict(human)},
+    )
+    monkeypatch.setattr(ingest, "_client", lambda: client)
+
+    ingest.upsert([entry])
+
+    payload = client.calls[0]["points"][0].payload
+    for key, value in human.items():
+        assert payload[key] == value, f"重放把人工字段 {key} 弄丢了"
+
+
+def test_rerun_embeds_the_override_text(fake_embed, monkeypatch):
+    """人工改过正文的条目，重放时要用**覆写正文**算向量 —— 否则改过的说法搜不到。"""
+    entry = make_entry()
+    point_id = str(ids.point_id(entry.source, entry.date, entry.text))
+    client = FakeQdrantClient(
+        exists=True,
+        points=[SimpleNamespace(id=point_id, score=1.0, payload={})],
+        payloads={point_id: {"override": {"text": "人工改过的说法"}}},
+    )
+    monkeypatch.setattr(ingest, "_client", lambda: client)
+
+    ingest.upsert([entry])
+
+    assert fake_embed == [["人工改过的说法"]]
 
 
 def test_upsert_empty_text_error_message_is_exact():

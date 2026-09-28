@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>first-rag · 条目审阅</title>
+<style>
+  :root { --fg:#1c1c1e; --muted:#6b7280; --line:#e5e7eb; --bg:#fafafa; --accent:#2563eb; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.6 -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+         color:var(--fg); background:var(--bg); }
+  header { padding:16px 20px; border-bottom:1px solid var(--line); background:#fff; }
+  header h1 { margin:0; font-size:16px; font-weight:600; }
+  header p { margin:4px 0 0; color:var(--muted); font-size:12px; }
+  main { display:flex; gap:0; height:calc(100vh - 66px); }
+  #list-pane { flex:1 1 62%; min-width:0; display:flex; flex-direction:column;
+               border-right:1px solid var(--line); background:#fff; }
+  #detail-pane { flex:0 0 38%; overflow:auto; padding:16px 20px; }
+  .filters { display:flex; flex-wrap:wrap; gap:8px; align-items:center;
+             padding:12px 16px; border-bottom:1px solid var(--line); }
+  .filters input, .filters select { padding:4px 8px; border:1px solid var(--line);
+             border-radius:6px; font:inherit; background:#fff; }
+  .filters input[type=text] { width:110px; }
+  .filters label { color:var(--muted); font-size:12px; display:flex; align-items:center; gap:4px; }
+  button { font:inherit; padding:4px 12px; border:1px solid var(--line); border-radius:6px;
+           background:#fff; cursor:pointer; }
+  button:hover { border-color:var(--accent); color:var(--accent); }
+  #list { list-style:none; margin:0; padding:0; overflow:auto; flex:1 1 auto; }
+  #list li { padding:10px 16px; border-bottom:1px solid var(--line); cursor:pointer; }
+  #list li:hover { background:#f5f7ff; }
+  #list li.active { background:#eef2ff; }
+  .meta { color:var(--muted); font-size:12px; }
+  .preview { margin-top:2px; }
+  .badge { display:inline-block; margin-left:6px; padding:0 6px; border-radius:999px;
+           font-size:11px; border:1px solid var(--line); color:var(--muted); }
+  .badge.edited { border-color:#f59e0b; color:#b45309; }
+  .badge.deleted { border-color:#ef4444; color:#b91c1c; }
+  .pager { display:flex; gap:8px; align-items:center; padding:10px 16px;
+           border-top:1px solid var(--line); color:var(--muted); font-size:12px; }
+  #detail-pane h2 { margin:0 0 8px; font-size:15px; }
+  #detail-pane dl { margin:0 0 12px; display:grid; grid-template-columns:auto 1fr; gap:2px 10px; }
+  #detail-pane dt { color:var(--muted); font-size:12px; }
+  #detail-pane dd { margin:0; overflow-wrap:anywhere; }
+  .text-block { white-space:pre-wrap; padding:10px 12px; border:1px solid var(--line);
+                border-radius:8px; background:#fff; }
+  details { margin-top:8px; }
+  details summary { color:var(--muted); font-size:12px; cursor:pointer; }
+  .empty { color:var(--muted); padding:24px 16px; }
+  #edit-form { margin-top:14px; border-top:1px solid var(--line); padding-top:12px; }
+  #edit-form textarea, #edit-form input, #edit-form select {
+    width:100%; padding:6px 8px; border:1px solid var(--line); border-radius:6px;
+    font:inherit; background:#fff; }
+  .edit-row { display:flex; gap:8px; margin-top:8px; }
+  .edit-row > * { flex:1 1 auto; }
+  .edit-row > button { flex:0 0 auto; }
+  .nav-row { display:flex; gap:8px; margin:10px 0 2px; }
+  a.entry-link { color:var(--accent); text-decoration:none; }
+  a.entry-link:hover { text-decoration:underline; }
+</style>
+</head>
+<body>
+<header>
+  <h1>first-rag · 条目审阅</h1>
+  <p>本机审阅：浏览、筛选、<strong>人工修正</strong>。改过的条目带"已编辑"徽章，
+     原始蒸馏正文仍可在详情里展开查看；删除是软删除，可恢复。</p>
+</header>
+<main>
+  <section id="list-pane">
+    <div class="filters">
+      <input id="f-date-from" type="text" placeholder="起始 2026-09-01">
+      <input id="f-date-to" type="text" placeholder="截止 2026-09-30">
+      <select id="f-type"><option value="">全部类型</option></select>
+      <input id="f-project" type="text" placeholder="项目">
+      <input id="f-source" type="text" placeholder="来源">
+      <label><input id="f-deleted" type="checkbox"> 显示已删除</label>
+      <button id="f-apply">查询</button>
+    </div>
+    <ul id="list"></ul>
+    <div class="pager">
+      <button id="prev">上一页</button>
+      <button id="next">下一页</button>
+      <span id="pager-info"></span>
+    </div>
+  </section>
+  <aside id="detail-pane"><p class="empty">从左侧选一条查看详情。</p></aside>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const UI_HEADER = "first-rag-ui";
+let page = 1;
+let types = [];
+
+function query() {
+  const params = new URLSearchParams();
+  const map = { date_from: $("f-date-from"), date_to: $("f-date-to"),
+                type: $("f-type"), project: $("f-project"), source: $("f-source") };
+  for (const [key, el] of Object.entries(map)) {
+    if (el.value.trim()) params.set(key, el.value.trim());
+  }
+  if ($("f-deleted").checked) params.set("include_deleted", "true");
+  params.set("page", String(page));
+  return params;
+}
+
+async function loadTypes() {
+  const res = await fetch("/types");
+  if (!res.ok) return;
+  types = (await res.json()).types;
+  for (const name of types) {
+    const opt = document.createElement("option");
+    opt.value = name; opt.textContent = name;
+    $("f-type").appendChild(opt);
+  }
+}
+
+async function loadList() {
+  const res = await fetch("/entries?" + query().toString());
+  const data = await res.json();
+  const list = $("list");
+  list.innerHTML = "";
+  if (!data.entries.length) {
+    list.innerHTML = '<li class="empty">没有符合条件的条目。</li>';
+  }
+  for (const entry of data.entries) {
+    const li = document.createElement("li");
+    li.dataset.id = entry.id;
+    const badges = (entry.edited ? '<span class="badge edited">已编辑</span>' : "")
+                 + (entry.deleted_at ? '<span class="badge deleted">已删除</span>' : "");
+    li.innerHTML = '<div class="meta"></div><div class="preview"></div>';
+    li.querySelector(".meta").innerHTML =
+      `${entry.date} · ${entry.type} · ${entry.source}${badges}`;
+    li.querySelector(".preview").textContent = (entry.text || "").slice(0, 90);
+    li.onclick = () => { location.hash = "#/entry/" + entry.id; };
+    if (location.hash === "#/entry/" + entry.id) li.classList.add("active");
+    list.appendChild(li);
+  }
+  $("pager-info").textContent =
+    `第 ${data.page} 页 · 共 ${data.total} 条（每页 ${data.page_size}）`;
+  $("prev").disabled = data.page <= 1;
+  $("next").disabled = data.page * data.page_size >= data.total;
+}
+
+function renderDetail(entry) {
+  const pane = $("detail-pane");
+  const row = (label, value) => value
+    ? `<dt>${label}</dt><dd>${value}</dd>` : "";
+  // 顺藤摸瓜（FR-027）：关联边与同日前后翻都做成可点链接，而不是一串 ID。
+  const link = (id) => `<a class="entry-link" href="#/entry/${id}">${String(id).slice(0, 8)}</a>`;
+  const trail = row("编辑于", entry.edited_at) + row("删除于", entry.deleted_at)
+              + row("删除原因", entry.deleted_reason) + row("版本", entry.rev);
+  const original = entry.edited
+    ? `<details><summary>原始蒸馏正文</summary>
+         <div class="text-block">${escapeHtml(entry.original_text || "")}</div></details>`
+    : "";
+  pane.innerHTML = `
+    <h2>${entry.date} · ${entry.type}${entry.deleted_at ? " · 已删除" : ""}</h2>
+    <div class="text-block">${escapeHtml(entry.text || "")}</div>
+    ${original}
+    <div class="nav-row">
+      ${entry.prev_id ? `<button type="button" id="prev-entry">← 上一条</button>` : ""}
+      ${entry.next_id ? `<button type="button" id="next-entry">下一条 →</button>` : ""}
+    </div>
+    <dl>
+      ${row("项目", entry.project)}${row("来源", entry.source)}
+      ${row("标签", (entry.tags || []).join("、"))}
+      ${row("创建于", entry.created_at)}
+      ${row("溯源引用", (entry.source_refs || []).join("、"))}
+      ${row("关联边", (entry.related || []).map(link).join("、"))}
+      ${trail}
+    </dl>
+    <p class="meta">关联边基于原始蒸馏正文计算，不随人工编辑变化。</p>
+    <form id="edit-form">
+      <textarea id="e-text" rows="4">${escapeHtml(entry.text || "")}</textarea>
+      <div class="edit-row">
+        <select id="e-type">
+          ${types.map((t) => `<option${t === entry.type ? " selected" : ""}>${t}</option>`).join("")}
+        </select>
+        <input id="e-tags" type="text" value="${escapeHtml((entry.tags || []).join(", "))}">
+        <input id="e-project" type="text" value="${escapeHtml(entry.project || "")}">
+      </div>
+      <div class="edit-row">
+        <button type="submit">保存</button>
+        ${entry.deleted_at
+          ? '<button type="button" id="restore-btn">恢复</button>'
+          : '<button type="button" id="delete-btn">删除</button>'}
+        <span id="edit-msg" class="meta"></span>
+      </div>
+    </form>`;
+  $("edit-form").onsubmit = (event) => { event.preventDefault(); save(entry); };
+  const deleteBtn = $("delete-btn");
+  if (deleteBtn) deleteBtn.onclick = () => remove(entry);
+  const restoreBtn = $("restore-btn");
+  if (restoreBtn) restoreBtn.onclick = () => restore(entry);
+  const prevBtn = $("prev-entry");
+  if (prevBtn) prevBtn.onclick = () => { location.hash = "#/entry/" + entry.prev_id; };
+  const nextBtn = $("next-entry");
+  if (nextBtn) nextBtn.onclick = () => { location.hash = "#/entry/" + entry.next_id; };
+}
+
+async function write(method, url, body) {
+  const res = await fetch(url, {
+    method,
+    headers: { "Content-Type": "application/json", "X-Requested-With": UI_HEADER },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `${res.status}`);
+  return data;
+}
+
+async function afterWrite(entry) {
+  await loadList();
+  location.hash = "#/entry/" + entry.id;
+  await route();
+}
+
+async function save(entry, rev = entry.rev) {
+  const tags = $("e-tags").value.split(",").map((t) => t.trim()).filter(Boolean);
+  try {
+    await write("PATCH", "/entries/" + encodeURIComponent(entry.id), {
+      rev, text: $("e-text").value, type: $("e-type").value,
+      tags, project: $("e-project").value,
+    });
+  } catch (err) {
+    if (/已被改动|版本/.test(err.message)) {   // 409：另一次编辑先落库了
+      await afterWrite(entry);
+      $("edit-msg").textContent = "这条已被别处改动，已刷新到最新版本，请重看后再改。";
+      return;
+    }
+    $("edit-msg").textContent = "保存失败：" + err.message;
+    return;
+  }
+  await afterWrite(entry);
+}
+
+async function remove(entry) {
+  const reason = prompt("删除原因（可留空）：", "") ?? null;
+  if (reason === null) return;
+  try {
+    await write("POST", `/entries/${encodeURIComponent(entry.id)}/delete`, { rev: entry.rev, reason });
+  } catch (err) {
+    $("edit-msg").textContent = "删除失败：" + err.message;
+    return;
+  }
+  await afterWrite(entry);
+}
+
+async function restore(entry) {
+  try {
+    await write("POST", `/entries/${encodeURIComponent(entry.id)}/restore`, { rev: entry.rev });
+  } catch (err) {
+    $("edit-msg").textContent = "恢复失败：" + err.message;
+    return;
+  }
+  await afterWrite(entry);
+}
+
+function escapeHtml(value) {
+  return value.replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+async function route() {
+  const match = location.hash.match(/^#\/entry\/(.+)$/);
+  if (!match) return;
+  const res = await fetch("/entries/" + encodeURIComponent(match[1]));
+  if (!res.ok) {
+    $("detail-pane").innerHTML = '<p class="empty">条目不存在（可能已被删除）。</p>';
+    return;
+  }
+  renderDetail(await res.json());
+}
+
+$("f-apply").onclick = () => { page = 1; loadList(); };
+$("prev").onclick = () => { page -= 1; loadList(); };
+$("next").onclick = () => { page += 1; loadList(); };
+window.addEventListener("hashchange", route);
+
+loadTypes().then(loadList).then(route);
+</script>
+</body>
+</html>

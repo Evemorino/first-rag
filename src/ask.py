@@ -19,6 +19,7 @@ from typing import Iterator
 from qdrant_client.models import DatetimeRange, FieldCondition, Filter, MatchValue
 
 from src import config, similarity
+from src.entries import effective, visibility_condition
 from src.ark_client import chat, chat_stream, embed
 from src.ask_expand import Citation, citations_from_hits, expand_neighbors
 
@@ -58,7 +59,10 @@ def build_filters(
     until: str | None = None,
     today: date | None = None,
 ) -> Filter | None:
-    """Build the Qdrant payload filter (FR-018). None = no filtering."""
+    """Qdrant payload 过滤（FR-018）+ **无条件**的"未软删"闸（FR-029 / ADR-19）。
+
+    这道闸不再返回 None：软删条目对检索必须一律不可见，与用户传没传过滤条件无关。
+    """
     conditions = []
     if type:
         conditions.append(
@@ -73,8 +77,8 @@ def build_filters(
         date_range["lte"] = f"{d.isoformat()}T23:59:59Z"
     if date_range:
         conditions.append(FieldCondition(key="date", range=DatetimeRange(**date_range)))
-    if not conditions:
-        return None
+    # 人工软删的条目对检索不可见 —— 与列表用同一份判据（entries.visibility_condition）。
+    conditions.append(visibility_condition())
     return Filter(must=conditions)
 
 

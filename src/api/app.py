@@ -7,6 +7,16 @@
                      防 cron 与 API 并发，F2）；GET /sync/status 查进度
 - GET  /ask          检索问答（与 CLI 共用 src.ask.query）
 - GET  /ask/stream   同上但 SSE 流式（共用 src.ask.query_stream）
+- GET  /             本机审阅页（静态单页，FR-026 / NFR-009）
+- GET  /types        配置里的类型枚举（供页面筛选与编辑下拉，FR-016）
+- GET  /entries      条目列表（过滤 + 分页，默认隐藏软删条目）
+- GET  /entries/{id} 条目详情（生效值 + 原始正文 + 留痕 + 关联边）
+- PATCH /entries/{id}          人工编辑（覆写层 + 乐观并发）
+- POST /entries/{id}/delete    软删除（可恢复）
+- POST /entries/{id}/restore   恢复
+
+写接口额外要求"这请求来自本机页面"（`Origin`/`Host` + 自定义头），理由见
+`require_local` —— 无鉴权的本机服务，唯一的实际风险面是浏览器里的别的页面。
 """
 
 from __future__ import annotations
@@ -18,16 +28,23 @@ from collections.abc import Iterator
 from dataclasses import asdict
 from datetime import date as date_type
 from datetime import datetime
+from pathlib import Path
+from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from src import ask, config, log, sync
+from src import ask, config, entries as entries_module, log, sync
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="first-rag", version="0.1.0")
+
+_UI_INDEX = Path(__file__).resolve().parent / "ui" / "index.html"
+
+_LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+UI_HEADER = "first-rag-ui"
 
 _state_lock = threading.Lock()
 _sync_state: dict = {
@@ -196,3 +213,138 @@ def get_ask_stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.get("/", response_class=HTMLResponse)
+def index() -> str:
+    """审阅页（FR-026）：随仓库走的静态单页，零构建、无外部依赖（NFR-009）。"""
+    return _UI_INDEX.read_text(encoding="utf-8")
+
+
+@app.get("/types")
+def list_types() -> dict:
+    """类型枚举来自 config/schema.json —— 页面不硬编码类型表（FR-016 / 宪法 III）。"""
+    types = config.load_schema().get("types", [])
+    return {"types": [t["name"] if isinstance(t, dict) else str(t) for t in types]}
+
+
+@app.get("/entries")
+def list_entries(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    type: str | None = None,
+    project: str | None = None,
+    source: str | None = None,
+    include_deleted: bool = False,
+    page: int = 1,
+) -> dict:
+    """条目列表：过滤 + 日期倒序 + 分页，默认隐藏软删条目（FR-026 / FR-029）。"""
+    try:
+        return entries_module.list_entries(
+            date_from=date_from,
+            date_to=date_to,
+            type=type,
+            project=project,
+            source=source,
+            include_deleted=include_deleted,
+            page=page,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/entries/{entry_id}")
+def get_entry(entry_id: str) -> dict:
+    """条目详情（FR-027）：生效值 + 原始正文 + 留痕 + 关联边。"""
+    entry = entries_module.get_entry(entry_id)
+    if entry is None:
+        raise HTTPException(404, "条目不存在")
+    return entry
+
+
+def require_local(request: Request) -> None:
+    """写接口只接受"来自本机页面"的请求（NFR-010 / ADR-20）。
+
+    三道闸各挡一种情况：`Host` 非本机（有人把它挂到 `0.0.0.0` 时挡下）、
+    缺少自定义头（浏览器里别的页面发跨站请求时带不了它 —— 自定义头会触发预检，
+    而我们不回答 CORS）、`Origin` 非本机。无鉴权服务里，这三样就是全部防线。
+    """
+    host = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]")
+    if host not in _LOCAL_HOSTS:
+        raise HTTPException(403, "只接受本机请求")
+    if request.headers.get("x-requested-with") != UI_HEADER:
+        raise HTTPException(403, f"缺少页面标识头（X-Requested-With: {UI_HEADER}）")
+    origin = request.headers.get("origin")
+    if origin and urlparse(origin).hostname not in _LOCAL_HOSTS:
+        raise HTTPException(403, "拒绝跨站来源")
+
+
+class EditBody(BaseModel):
+    """人工编辑的入参：只含可改字段 + 版本号（ADR-18）。"""
+
+    rev: int
+    text: str | None = None
+    type: str | None = None
+    tags: list[str] | None = None
+    project: str | None = None
+
+
+class DeleteBody(BaseModel):
+    rev: int
+    reason: str | None = None
+
+
+class RevBody(BaseModel):
+    rev: int
+
+
+def _write(call):
+    """把核心层的三种业务异常映射成状态码，其余按 502 处理（同 /ask 的文案风格）。"""
+    try:
+        return call()
+    except entries_module.NotFoundError as exc:
+        raise HTTPException(404, "条目不存在") from exc
+    except entries_module.ConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except entries_module.ValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 — 嵌入失败等：整条编辑不生效
+        logger.exception("entry write failed")
+        raise HTTPException(
+            502, f"保存失败：{exc}（检查 .env 里的 Ark 配置与 `make up`）"
+        ) from exc
+
+
+@app.patch("/entries/{entry_id}")
+def patch_entry(
+    entry_id: str, body: EditBody, _: None = Depends(require_local)
+) -> dict:
+    """人工编辑：写覆写层 + 留痕，并用生效正文重算向量（FR-028 / ADR-18）。"""
+    return _write(
+        lambda: entries_module.edit_entry(
+            entry_id,
+            rev=body.rev,
+            text=body.text,
+            type=body.type,
+            tags=body.tags,
+            project=body.project,
+        )
+    )
+
+
+@app.post("/entries/{entry_id}/delete")
+def post_delete(
+    entry_id: str, body: DeleteBody, _: None = Depends(require_local)
+) -> dict:
+    """软删除（FR-029 / ADR-19）：可恢复，不摘向量。"""
+    return _write(
+        lambda: entries_module.delete_entry(entry_id, rev=body.rev, reason=body.reason)
+    )
+
+
+@app.post("/entries/{entry_id}/restore")
+def post_restore(
+    entry_id: str, body: RevBody, _: None = Depends(require_local)
+) -> dict:
+    """恢复软删条目（FR-029）。"""
+    return _write(lambda: entries_module.restore_entry(entry_id, rev=body.rev))

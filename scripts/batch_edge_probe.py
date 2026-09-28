@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import argparse
 import collections
-import inspect
 import itertools
 import json
 import sys
@@ -53,7 +52,7 @@ from qdrant_client import QdrantClient
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import config, similarity  # noqa: E402  (先补 sys.path 才能导入)
+from src import config  # noqa: E402  (先补 sys.path 才能导入)
 from src.distill_batches import split_for_batches  # noqa: E402
 
 # cosine / run_key / collect_points 从同日重跑报告复用：两个脚本量的是同一件事的
@@ -61,11 +60,36 @@ from src.distill_batches import split_for_batches  # noqa: E402
 # 是同一条规矩。
 from rerun_overlap_report import collect_points, cosine, run_key  # noqa: E402
 
-# 建边阈值不读配置（它本来就不是配置项）：直接取 `build_related_edges` 的形参默认值，
+# 建边阈值不读配置（它本来就不是配置项）：取 `build_related_edges` 的形参默认值，
 # 这样 src 改了默认值本脚本自动跟上，不会留第二份硬编码。
-EDGE_THRESHOLD: float = float(
-    inspect.signature(similarity.build_related_edges).parameters["threshold"].default
-)
+#
+# **必须读源码，不能读运行时属性**（2026-09-28 修）：原来这里写的是
+# `inspect.signature(similarity.build_related_edges)...`，而 mutmut 跑批时会把
+# 被变异的函数包进 trampoline —— 那时 `__kwdefaults__` 是 `None`、`inspect` 也读不出
+# 默认值，于是本脚本**在 import 时就炸**，`make mutation` 连 stats 阶段都过不去。
+# 症状很隐蔽：那条命令不在 pre-commit 里，自 v0.7.18 起一直是坏的也没人发现
+# （它 4 秒就退，而 README 写着"约半小时"）。读源码 AST 与 trampoline 无关。
+def _source_default_threshold(name: str = "threshold") -> float:
+    """从 `src/similarity.py` 的源码里取 `build_related_edges` 的形参默认值。"""
+    import ast
+
+    source = (Path(__file__).resolve().parents[1] / "src" / "similarity.py").read_text(
+        encoding="utf-8"
+    )
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.FunctionDef) and node.name == "build_related_edges":
+            args = node.args.kwonlyargs
+            defaults = node.args.kw_defaults
+            for arg, default in zip(args, defaults):
+                if arg.arg == name and isinstance(default, ast.Constant):
+                    return float(default.value)
+    raise RuntimeError(
+        "src/similarity.py 的 build_related_edges 里找不到 threshold 的默认值 —— "
+        "阈值是本脚本的唯一硬编码来源，读不到就宁可报错，也不要悄悄用一个猜的值"
+    )
+
+
+EDGE_THRESHOLD: float = _source_default_threshold()
 
 CROSS_BATCH = "same-run/cross-batch"
 SAME_BATCH = "same-run/same-batch"

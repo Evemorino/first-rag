@@ -95,6 +95,13 @@ DIRECTORIES: dict[str, Place] = {
         "HTTP 薄壳，只准调编排层。这里不该有业务逻辑，逻辑下沉到编排层 —— "
         "否则同一件事会有两份实现，改一份漏一份。",
     ),
+    "src/api/ui/": Place(
+        "接口层 api/",
+        "审阅页的静态资源（HTML + 内联 CSS/JS）：零构建、无外部 CDN，由 "
+        "src/api/app.py 读取返回（PRD NFR-009）。它不含 .py，位置门禁本来扫不到它 —— "
+        "登记在这里是为了让「src/ 下新增目录必须停下来想一步」这条规则也覆盖静态资源，"
+        "顺便写明它属于接口层、且只对本机提供。",
+    ),
     "src/plugins/": Place(
         "插件层 plugins/",
         "采集插件，自成一体，只认 src.plugins 与 src.config。子目录不单独登记："
@@ -106,7 +113,14 @@ DIRECTORIES: dict[str, Place] = {
 # 每层允许 import 的 src 前缀。None 表示不限制（编排层本来就要互相调用）。
 ALLOWED: dict[str, set[str] | None] = {
     "插件层 plugins/": {"src.plugins", "src.config"},
-    "接口层 api/": {"src.api", "src.config", "src.sync", "src.ask", "src.log"},
+    "接口层 api/": {
+        "src.api",
+        "src.config",
+        "src.sync",
+        "src.ask",
+        "src.log",
+        "src.entries",  # v0.8 审阅页的读取/写入面（编排层模块，叫 entries 而已）
+    },
     "核心层（宪法 VII）": {"src.config", "src.collect"},
     "基础设施 config": set(),
     "编排层": None,

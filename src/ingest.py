@@ -14,6 +14,7 @@ from qdrant_client.models import PointStruct
 
 from src import config, ids, similarity
 from src.ark_client import embed
+from src.entries import embedding_text, human_fields
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,48 @@ def _embed_all(texts: list[str]) -> list[list[float]]:
     return vectors
 
 
+def _existing_payloads(point_ids: list[UUID], client: QdrantClient) -> dict[str, dict]:
+    """按 ID 取既有 payload（不存在的自然缺席，不报错）。"""
+    if not point_ids:
+        return {}
+    records = client.retrieve(
+        collection_name=config.COLLECTION,
+        ids=[str(point_id) for point_id in point_ids],
+        with_payload=True,
+        with_vectors=False,
+    )
+    return {str(record.id): (record.payload or {}) for record in records}
+
+
+def _texts_to_embed(
+    ordered: list[tuple[UUID, Entry]], existing: dict[str, dict]
+) -> list[str]:
+    """该拿哪段文字算向量：人工改过就用覆写正文（ADR-18）。"""
+    return [
+        embedding_text(entry.text, human_fields(existing.get(str(point_id), {})))
+        for point_id, entry in ordered
+    ]
+
+
+def _payload_with_human(
+    point_id: UUID,
+    entry: Entry,
+    edges: similarity.RelatedEdges,
+    existing: dict[str, dict],
+) -> dict:
+    """自动字段照写，人工字段**最后**合并 —— 重放不许碰它们（NFR-011）。"""
+    auto = _payload(
+        replace(
+            entry,
+            related=_merge_related(
+                entry.related,
+                edges.new_related.get(str(point_id), []),
+            ),
+        )
+    )
+    return {**auto, **human_fields(existing.get(str(point_id), {}))}
+
+
 def upsert(entries: list[Entry]) -> Report:
     """批量嵌入 Entry 并幂等 upsert 到 Qdrant。"""
     if not entries:
@@ -115,32 +158,42 @@ def upsert(entries: list[Entry]) -> Report:
         if not entry.text:
             raise ValueError("entry text must not be empty")
 
-    # 先批量生成全部向量，避免逐条调用 Ark API。
-    vectors = _embed_all([entry.text for entry in entries])
-
     # 同一批内如果出现相同 source/date/text，只保留第一个点。
     # 不同 metadata 不应导致同一身份被写成两个 point。
-    ordered: list[tuple[UUID, list[float], Entry]] = []
+    ordered: list[tuple[UUID, Entry]] = []
     seen: set[UUID] = set()
-    for entry, vector in zip(entries, vectors):
+    for entry in entries:
         point_uuid = ids.point_id(entry.source, entry.date, entry.text)
         if point_uuid in seen:
             continue
         seen.add(point_uuid)
-        ordered.append((point_uuid, vector, entry))
+        ordered.append((point_uuid, entry))
 
     client = _client()
+    # 取一次既有 payload。两件事都靠它（ADR-18 / NFR-011）：
+    #   ① 重放不许覆盖人工字段（覆写、留痕、软删标记）；
+    #   ② 人工改过正文的条目要用**覆写正文**算向量 —— 否则重放会把向量改回旧正文，
+    #      "改过就能按自己的说法搜到"当场失效。
+    # 必须排在 embedding 之前：算完再读就晚了。
+    existing = _existing_payloads([point_id for point_id, _ in ordered], client)
+    # 批量生成全部向量，避免逐条调用 Ark API。
+    vectors = _embed_all(_texts_to_embed(ordered, existing))
+    scored = [
+        (point_id, vector, entry)
+        for (point_id, entry), vector in zip(ordered, vectors)
+    ]
+
     kept_indices = similarity.filter_novel(
-        [point_id for point_id, _, _ in ordered],
-        [vector for _, vector, _ in ordered],
+        [point_id for point_id, _, _ in scored],
+        [vector for _, vector, _ in scored],
         client=client,
         collection_name=config.COLLECTION,
     )
     # 在哪一侧被拦下要分开记：蒸馏产出 0 与入库被新颖度拦掉是两种现场（AC-015）。
-    skipped = _skipped_by_source(ordered, kept_indices)
+    skipped = _skipped_by_source(scored, kept_indices)
     # 只对会真正入库的条目建关联边（FR-017 / T027）：重复项已被 filter_novel
     # 跳过，不该再参与建边。复用同一个 client，不多建连接。
-    kept = [ordered[index] for index in kept_indices]
+    kept = [scored[index] for index in kept_indices]
     edges = similarity.build_related_edges(
         [point_id for point_id, _, _ in kept],
         [vector for _, vector, _ in kept],
@@ -151,15 +204,7 @@ def upsert(entries: list[Entry]) -> Report:
         PointStruct(
             id=point_id,
             vector=vector,
-            payload=_payload(
-                replace(
-                    entry,
-                    related=_merge_related(
-                        entry.related,
-                        edges.new_related.get(str(point_id), []),
-                    ),
-                )
-            ),
+            payload=_payload_with_human(point_id, entry, edges, existing),
         )
         for point_id, vector, entry in kept
     ]

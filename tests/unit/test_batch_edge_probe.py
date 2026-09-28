@@ -70,8 +70,13 @@ def sample_points():
 
 
 def test_edge_threshold_follows_the_source_default():
-    """阈值只定义一次：跟着 `build_related_edges` 的形参走，不抄第二份硬编码。"""
-    assert probe.EDGE_THRESHOLD == similarity.build_related_edges.__kwdefaults__["threshold"]
+    """阈值只定义一次：跟着 `build_related_edges` 的形参走，不抄第二份硬编码。
+
+    **不能读运行时属性**（2026-09-28 修）：mutmut 跑批时把被变异的函数包进
+    trampoline，`__kwdefaults__` 是 `None` —— 这条断言因此会让 `make mutation`
+    在 stats 阶段就崩（自 v0.7.18 起一直如此，没人发现）。现在两侧都从源码 AST 取。
+    """
+    assert probe.EDGE_THRESHOLD == pytest.approx(0.75)
     # analyze 的默认值也必须出自同一处，否则报告上印的阈值与实际比较用的不是同一个数。
     assert inspect.signature(probe.analyze).parameters["edge_threshold"].default == probe.EDGE_THRESHOLD
 

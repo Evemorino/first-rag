@@ -22,6 +22,7 @@ from typing import Any, Sequence
 from qdrant_client import QdrantClient
 
 from src import config, similarity
+from src.entries import effective, visible
 
 
 @dataclass(frozen=True)
@@ -43,18 +44,22 @@ def _client() -> QdrantClient:
 
 
 def citations_from_hits(hits: list[similarity.Hit]) -> list[Citation]:
-    return [
-        Citation(
-            id=h.id,
-            date=h.payload.get("date", ""),
-            type=h.payload.get("type", ""),
-            text=h.payload.get("text", ""),
-            source=h.payload.get("source", ""),
-            source_refs=h.payload.get("source_refs", []),
-            score=h.score,
+    """引用列表 —— 正文与类型取**生效值**（人工改过就按人工版引用，ADR-18）。"""
+    citations = []
+    for h in hits:
+        values = effective(h.payload)
+        citations.append(
+            Citation(
+                id=h.id,
+                date=h.payload.get("date", ""),
+                type=values["type"] or "",
+                text=values["text"] or "",
+                source=h.payload.get("source", ""),
+                source_refs=h.payload.get("source_refs", []),
+                score=h.score,
+            )
         )
-        for h in hits
-    ]
+    return citations
 
 
 # --- 关联扩展（T029 / FR-020 / FR-021，AC-005）---
@@ -117,6 +122,9 @@ def expand_neighbors(
     )
     expanded = []
     for record in records:
+        # 指向已软删条目的边被忽略（FR-029）—— 不展示死链，也不级联删边。
+        if not visible(record.payload or {}):
+            continue
         score = 1.0
         if threshold is not None:
             score = _cosine(question_vector, record.vector or [])
@@ -128,11 +136,12 @@ def expand_neighbors(
 
 def _citation_from_record(record: Any, score: float) -> Citation:
     payload = record.payload or {}
+    values = effective(payload)
     return Citation(
         id=str(record.id),
         date=payload.get("date", ""),
-        type=payload.get("type", ""),
-        text=payload.get("text", ""),
+        type=values["type"] or "",
+        text=values["text"] or "",
         source=payload.get("source", ""),
         source_refs=payload.get("source_refs", []),
         score=score,

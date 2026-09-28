@@ -91,6 +91,10 @@ only_mutate = [
     "src/collect.py",
     "src/distill.py",
     "src/distill_batches.py",
+    # v0.8 加进 entries.py：它是人工修正的**唯一**入口（覆写层解析、软删与恢复、
+    # 同日邻居导航），而"重放会不会覆盖人工值"这类判断错一个分支就会静默丢改动 ——
+    # 正是变异测试该盯的那种。加进来时按规矩整个重建了 mutants/。
+    "src/entries.py",
 ]
 pytest_add_cli_args = ["-x", "-q", "--no-header", "-p", "no:cacheprovider"]
 # mutants/ 是独立的工作副本：config/ 是测试要读的 schema.json；scripts/ 是因为
@@ -109,8 +113,12 @@ pytest_add_cli_args = ["-x", "-q", "--no-header", "-p", "no:cacheprovider"]
 # 就登记哪个文件**。注释里写着"同理"不会替你登记。
 # 现在的兜底做法：改完任何读仓库根文件的测试，跑一次
 # `grep -rn 'REPO_ROOT / ' tests/` 对照这份名单，缺一行就补一行。
+# 规则：**读哪个仓库根文件，就登记哪个**（注释里写"同理"不算）。
+# 2026-09-28 第五次踩：v0.8 的 test_makefile_forwarding 新断言要读 AGENTS.md，
+# 而名单上没有它 —— `make mutation` 又在 stats 阶段崩掉。这条兜底检查请照做：
+#   rg -n 'REPO_ROOT / ' tests/
 also_copy = ["config/", "scripts/", ".pre-commit-config.yaml", "Makefile", "PRD.md",
-             "README.md"]
+             "README.md", "AGENTS.md"]
 do_not_mutate = ["src/plugins/_template/*"]
 # 按源码行排除，两类：
 # 1. 纯文案行 —— 拼给 LLM 的 JSON 字段名、示例文本、日志格式串。改这些不会

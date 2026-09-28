@@ -77,6 +77,7 @@ def _verdicts(mutants_dir: Path):
 KNOWN_NO_TESTS: dict[str, str] = {
     "ask_expand.x__client": "Qdrant client 工厂，测试一律 monkeypatch 掉，真函数体从未被执行",
     "ingest.x__client": "同上（集成测试与单测都用 fake client 替换）",
+    "entries.x__client": "同上（审阅面测试都显式传入 fake client，工厂本体从未执行）",
 }
 
 # 变异体名长 `<模块>.<函数>__mutmut_N`，去掉后缀就是分组用的函数名。
