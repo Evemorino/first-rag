@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """门禁自检：给每个 pre-commit 钩子植入一个已知违规，看它到底红不红。
 
+v0.9 起还多一类：**CI 专属关卡**（浏览器冒烟）。它按 NFR-012 ② 不进提交钩子，
+但"不进提交钩子"不等于"不需要自检" —— 它是验收的最后一层，同样会在没人看的时候
+瞎掉。这类用例用 `command=` 表示（直接跑那条命令，而不是 `pre-commit run <hook>`），
+所以它不在 `.pre-commit-config.yaml` 里，配置同步那两条判据会把它跳过。
+
 为什么需要它
 ------------
 门禁是这样死掉的：某天有人改了 scripts/lint_layers.py，把检查循环写错了
@@ -14,8 +19,11 @@ post-commit 提醒开了 verbose 才看得见），每一次都是"配置写了�
 
 这个脚本就是补最后一层：不测门禁内部逻辑，而是真的建一个临时仓库、真的植入
 违规、真的跑 `pre-commit run <hook>`，然后断言它退出码非 0。每个钩子配一个
-"必须红"的用例，再配一组"干净仓库必须绿"的对照组 —— 只测红不测绿，等于允许
+「必须红」的用例，再配一组「干净仓库必须绿」的对照组 —— 只测红不测绿，等于允许
 门禁靠一直报错来假装自己在工作。
+
+环境缺失（`web/node_modules` 没装、Qdrant 没起）会先说清楚并以退出码 2 结束：
+那种情况下红灯用例会"通过"，而通过的原因是环境坏了 —— 这正是本文件要防的假信号。
 
 用法::
 
@@ -109,6 +117,63 @@ BIG_SRC = "\n".join(f"value_{i} = {i}" for i in range(320)) + "\n"
 
 BOOM_TEST = "def test_boom():\n    assert False, '植入的失败用例'\n"
 
+# --- v0.9 前端（T121 / T122）---
+
+WEB_DIR = REPO_ROOT / "web"
+
+# 临时仓库要带过去的 web/ 工程本体。node_modules 不在这里（走软链，见 build_repo），
+# dist 也不在 —— 它是构建产物，而"从零构建出来"正是 e2e 用例要验的东西之一。
+WEB_SCAFFOLD = (
+    "package.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "tsconfig.json",
+    "eslint.config.js",
+    "vite.config.ts",
+    "playwright.config.ts",
+    "index.html",
+    "src",
+    "tests",
+    "e2e",
+)
+WEB_IGNORE = ("node_modules", "dist", "test-results", "playwright-report")
+
+# 全栈用例（浏览器冒烟）还要后端：uvicorn 从 .venv 起，读的是临时仓库里的
+# src/ 与 config/。.venv 必须**软链**（几百 MB，且要的是同一套依赖）；src/ 与
+# config/ 必须**拷贝** —— 软链的话 .resolve() 会把 ROOT 指回真仓库，那样服务出去的
+# 就是真仓库的 web/dist，这条用例反而什么都验不到。
+BACKEND_DIRS = ("src", "config")
+
+# 三条前端钩子的红灯夹具：每种违规只有它抓得住。
+# eslint 那条故意走 ADR-21 第 3 条的禁用 import（"前端不得成为第二个后端"），而不是
+# 随便写个未使用变量 —— 这条用例要证明的是**那条规则**真的在跑。
+WEB_BAD_IMPORT = (
+    'import { QdrantClient } from "qdrant-client";\n'
+    "\n"
+    "export const client = new QdrantClient();\n"
+)
+WEB_TYPE_ERROR = 'export const width: number = "300px";\n'
+WEB_BOOM_TEST = (
+    'import { expect, test } from "vitest";\n'
+    "\n"
+    'test("植入的违规：断言失败", () => {\n'
+    "  expect(1 + 1).toBe(3);\n"
+    "});\n"
+)
+# 页面断言失败。超时压到 1s：默认 30s 会让这条用例白等半分钟。
+WEB_BAD_PAGE_ASSERT = (
+    'import { expect, test } from "@playwright/test";\n'
+    "\n"
+    'test("植入的违规：页面断言失败", async ({ page }) => {\n'
+    '  await page.goto("/");\n'
+    '  await expect(page.getByText("gate-selftest 植入的文本：页面上不可能出现"))\n'
+    "    .toBeVisible({ timeout: 1000 });\n"
+    "});\n"
+)
+
+# CI 专属关卡的标签：它不是 .pre-commit-config.yaml 里的钩子。
+E2E_CASE = "playwright-e2e"
+
 
 def coverage_xml(filename: str, lines: range | list[int], hits: int) -> str:
     """造一份最小 coverage.xml：只有一个模块，指定行都是同一个命中数。"""
@@ -139,6 +204,9 @@ CLEAN_FILES = {
     "coverage.xml": coverage_xml("ok.py", [1, 2, 4, 5], 1),
 }
 
+# v0.9 的三条前端提交钩子：它们的临时仓库要多装一份 web/ 工程（见 build_repo）。
+WEB_HOOKS = ("web-eslint", "web-tsc", "web-vitest")
+
 # 参与对照的钩子。fixer 类（end-of-file-fixer / trailing-whitespace）也在内：
 # 干净文件它们不该动手，动手了说明规则写错了。
 CLEAN_HOOKS = [
@@ -157,6 +225,7 @@ CLEAN_HOOKS = [
     "pytest",
     "crap",
     "orphans",
+    *WEB_HOOKS,
 ]
 
 # 钩子脚本对本仓库 src/ 模块的依赖，建临时仓库时要一起带过去。
@@ -180,6 +249,21 @@ class Case:
     # 长得和"拦住了"一模一样 —— 干净对照组会因此假绿失败（secret-scan 第一版
     # 就是这么暴露出依赖 src/secret_patterns.py 的）。
     repo_files: tuple[str, ...] = ()
+    # 前端用例（v0.9）：临时仓库要多装一份 web/ 工程才能跑这些钩子/命令。
+    # 见 build_repo 里的 WEB_SCAFFOLD —— 只拷工程本体，node_modules 走软链。
+    web: bool = False
+    # 全栈用例（浏览器冒烟）：临时仓库还得能起 uvicorn —— 需要 .venv（软链）与
+    # src/、config/ 的副本。少了它们，webServer 起不来，而"起不来"同样是非 0，
+    # 红灯用例会因此假绿（第一次跑就踩到了，靠绿对照抓出来的）。
+    backend: bool = False
+    # CI 专属关卡：直接跑这条命令，而不是 `pre-commit run <hook>`。设了它，
+    # 这个 case 的 hook 字段只是报告里的标签，不再要求出现在 .pre-commit-config.yaml。
+    command: str = ""
+
+    @property
+    def label(self) -> str:
+        """报告里显示谁：钩子 id，或者 CI 专属关卡的那条命令。"""
+        return self.command or self.hook
 
     @property
     def slug(self) -> str:
@@ -292,14 +376,47 @@ CASES: list[Case] = [
          {"src/orphan.py": "x = 1\n",
           "coverage.xml": coverage_xml("orphan.py", [1], 0)}, "red",
          "CRAP 抓不到它（简单函数零覆盖 CRAP 只有 2），只有这个钩子会喊"),
+    # --- v0.9 前端：三条提交钩子 + 一条 CI 专属关卡 ---
+    Case("web-eslint", "前端 import 了向量库",
+         {"web/src/leak.ts": WEB_BAD_IMPORT}, "red", web=True,
+         why="ADR-21 第 3 条（NFR-009 ④）：前端只许消费既有 JSON 端点，不许直连向量库"
+             "或模型服务。夹具走的是 import 形状，规则是 eslint 的 no-restricted-syntax"
+             "—— 所以这条红了不等于 lint 配好了，还得看下一条（干净仓库必须绿）"),
+    Case("web-tsc", "前端类型错误",
+         {"web/src/broken.ts": WEB_TYPE_ERROR}, "red", web=True,
+         why="`tsc --noEmit` 是唯一能拦住类型漂移的一层（vite 构建不做类型检查）。"
+             "夹具刻意让类型错在 src/ 下：tsconfig 现在也吃 e2e 与 playwright.config，"
+             "而那两处以前一个类型判据都没有"),
+    Case("web-vitest", "前端单测失败",
+         {"web/tests/boom.test.ts": WEB_BOOM_TEST}, "red", web=True,
+         why="一个必失败的断言。注意 vitest 必须只吃 tests/ 下的 *.test.ts —— 默认"
+             "include 会去跑 playwright 的 *.spec.ts，然后以「跑不起来」的形式报红，"
+             "那种红和「测出问题」长得一样"),
+    Case(E2E_CASE, "浏览器冒烟抓得住页面回归",
+         {"web/e2e/planted.spec.ts": WEB_BAD_PAGE_ASSERT}, "red",
+         web=True, backend=True,
+         command="pnpm --dir web e2e",
+         why="CI 专属关卡（NFR-012 ②）：它不进提交钩子（要真后端 + Qdrant，几十秒），"
+             "但它是验收的最后一层，同样会在没人看的时候瞎掉。夹具是一个页面断言失败，"
+             "超时 1s 免得白等。**必须配上下面那条绿对照**：只测红的话，浏览器没装、"
+             "dist 没构建、Qdrant 没起 —— 任何一种「跑不起来」都会让这条假绿"),
 ] + [
     Case(hook, "干净仓库不该报", CLEAN_FILES, "green",
          "对照组：什么都不违规时，这个钩子必须放行",
          # 同样的理由：不在 merge 中的时候 check-merge-conflict 直接返回 0，
          # 那样的"绿"是假的，证明不了任何事。
          in_merge=(hook == "check-merge-conflict"),
+         web=(hook in WEB_HOOKS),
          repo_files=SCRIPT_DEPS.get(hook, ()))
     for hook in CLEAN_HOOKS
+] + [
+    Case(E2E_CASE, "干净仓库的 8 步验收必须过", CLEAN_FILES, "green",
+         web=True, backend=True,
+         command="pnpm --dir web e2e",
+         why="e2e 关卡的对照组，而且必须真跑完整 8 步 —— 只测红的话，任何「跑不起来」"
+             "（浏览器内核没装、webServer 起不来、Qdrant 没起）都会让红灯用例通过，"
+             "而那正是这个关卡最常见的坏法。跑这条需要 `make up`（Qdrant），"
+             "preflight 会先说明"),
 ]
 
 
@@ -309,6 +426,15 @@ class Result:
     state: str          # "red" / "green" / "missing" / "error"
     ok: bool
     detail: str = ""
+
+
+class EnvironmentNotReady(RuntimeError):
+    """环境没准备好（依赖没装、Qdrant 没起）。
+
+    必须与"门禁把违规拦住了"分开：环境缺失时跑什么都非 0，而**红灯用例要的就是
+    非 0** —— 一条条报出来的话，整套自检会在环境不全时"全绿"，那是最糟的假信号。
+    所以这种情形统一在 preflight 里拦下，退出码 2（配置/环境问题），不是 1。
+    """
 
 
 # --- 临时仓库 ---
@@ -321,8 +447,45 @@ def _git(dest: Path, *args: str) -> None:
     )
 
 
+def _copy_web_scaffold(dest: Path) -> None:
+    """把 web/ 工程本体拷进临时仓库，node_modules 用软链指回真仓库。
+
+    为什么依赖走软链：它几百 MB、几千个文件，而前端用例不止一条 —— 每条都拷一遍
+    就是几十秒。pnpm 的 node_modules 内部本来就是软链结构，指回去不影响解析。
+
+    为什么工程本体要拷贝而不能软链整个 web/：软链的话 `pnpm build` 会把 dist 写回
+    真仓库、植入的违规文件也会落进真仓库 —— 自检就变成了改源码，而"自检改源码"正是
+    这个文件一直避免的事。只软链依赖那一片，边界最清楚。
+    """
+    target = dest / "web"
+    target.mkdir(parents=True, exist_ok=True)
+    for rel in WEB_SCAFFOLD:
+        source = WEB_DIR / rel
+        if source.is_dir():
+            shutil.copytree(source, target / rel,
+                            ignore=shutil.ignore_patterns(*WEB_IGNORE))
+        else:
+            shutil.copy2(source, target / rel)
+    dependencies = WEB_DIR / "node_modules"
+    if not dependencies.is_dir():
+        raise EnvironmentNotReady(
+            "web/node_modules 不在 —— 先 `make ui`（或 "
+            "`pnpm --dir web install --frozen-lockfile`）"
+        )
+    (target / "node_modules").symlink_to(dependencies, target_is_directory=True)
+
+
+def _copy_backend_scaffold(dest: Path) -> None:
+    """.venv 软链 + src/、config/ 副本，让临时仓库能自己起后端（浏览器冒烟用）。"""
+    for name in BACKEND_DIRS:
+        shutil.copytree(REPO_ROOT / name, dest / name,
+                        ignore=shutil.ignore_patterns("__pycache__", "qdrant"))
+    (dest / ".venv").symlink_to(REPO_ROOT / ".venv", target_is_directory=True)
+
+
 def build_repo(dest: Path, files: dict[str, str], in_merge: bool = False,
-               repo_files: tuple[str, ...] = ()) -> None:
+               repo_files: tuple[str, ...] = (), web: bool = False,
+               backend: bool = False) -> None:
     """建一个能跑 pre-commit 的最小 git 仓库，并把夹具写进去。
 
     只 `git add` 不 commit，是故意的：真实提交时钩子面对的就是暂存区，
@@ -350,6 +513,12 @@ def build_repo(dest: Path, files: dict[str, str], in_merge: bool = False,
         target = dest / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(REPO_ROOT / rel, target)
+    # 前端用例先铺工程本体，再写夹具 —— 顺序反了的话，植入的违规文件会被整个
+    # 目录的拷贝盖掉（copytree 不覆盖已有文件，但"后写"这件事必须明确）。
+    if web:
+        _copy_web_scaffold(dest)
+    if backend:
+        _copy_backend_scaffold(dest)
     (dest / "pytest.ini").write_text(PYTEST_INI, encoding="utf-8")
 
     for rel, text in files.items():
@@ -385,6 +554,15 @@ def run_hook(dest: Path, hook: str) -> tuple[str, str]:
     return "red", out
 
 
+def run_command(dest: Path, command: str) -> tuple[str, str]:
+    """跑一条 CI 专属关卡的命令（不进 .pre-commit-config.yaml 的那种）。"""
+    proc = subprocess.run(
+        command, shell=True, cwd=dest, capture_output=True, text=True,
+        env=dict(_CLEAN_ENV),
+    )
+    return ("green" if proc.returncode == 0 else "red"), f"{proc.stdout}\n{proc.stderr}"
+
+
 _CLEAN_ENV = {
     key: value
     for key, value in __import__("os").environ.items()
@@ -395,13 +573,49 @@ _CLEAN_ENV = {
 def run_case(case: Case, keep: bool = False) -> Result:
     dest = TMP_ROOT / case.slug
     try:
-        build_repo(dest, case.files, case.in_merge, case.repo_files)
-        state, out = run_hook(dest, case.hook)
+        build_repo(dest, case.files, case.in_merge, case.repo_files, case.web,
+                   case.backend)
+        state, out = (run_command(dest, case.command) if case.command
+                      else run_hook(dest, case.hook))
         ok = state == case.expect
         return Result(case, state, ok, "" if ok else out.strip())
     finally:
         if not keep and dest.exists():
             shutil.rmtree(dest, ignore_errors=True)
+
+
+# --- 环境体检 ---
+
+QDRANT_URL = "http://127.0.0.1:6333"
+
+
+def qdrant_is_up(timeout: float = 2.0) -> bool:
+    """Qdrant 在不在。e2e 用例要真后端，而它连不上时"跑不起来"会长得像"拦住了"。"""
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{QDRANT_URL}/collections", timeout=timeout) as r:
+            return r.status == 200
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+def environment_problems(cases: list[Case]) -> list[str]:
+    """跑之前先看环境。缺环境是**环境问题**，不是"门禁生效了"（见 EnvironmentNotReady）。
+
+    只检查被选中的用例需要的东西：`--hook secret-scan` 不该因为 Qdrant 没起而失败。
+    """
+    problems: list[str] = []
+    if any(case.web for case in cases) and not (WEB_DIR / "node_modules").is_dir():
+        problems.append(
+            "web/node_modules 不在 —— 前端钩子与用例要它（先跑 `make ui`）"
+        )
+    if any(case.command for case in cases) and not qdrant_is_up():
+        problems.append(
+            f"Qdrant 连不上（{QDRANT_URL}）—— 浏览器冒烟用例要真后端（先跑 `make up`）"
+        )
+    return problems
 
 
 # --- 配置体检 ---
@@ -445,7 +659,7 @@ def render(results: list[Result]) -> str:
         want = "红" if result.case.expect == "red" else "绿"
         got = {"red": "红", "green": "绿", "missing": "配置里没有这个钩子",
                "error": "跑不起来"}[result.state]
-        lines.append(f"{mark} {result.case.title:<20} {result.case.hook:<26} "
+        lines.append(f"{mark} {result.case.title:<20} {result.case.label:<26} "
                      f"期望{want} 实际{got}")
     return "\n".join(lines)
 
@@ -477,6 +691,13 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr)
             return 2
 
+    problems = environment_problems(cases)
+    if problems:
+        print("✗ 环境体检没过（这是环境问题，不是门禁结果）：", file=sys.stderr)
+        for problem in problems:
+            print(f"    {problem}", file=sys.stderr)
+        return 2
+
     if args.why:
         for case in cases:
             print(f"{case.hook:<26} {case.title}\n    {case.why}")
@@ -486,7 +707,12 @@ def main(argv: list[str] | None = None) -> int:
         shutil.rmtree(TMP_ROOT, ignore_errors=True)
 
     print(f"门禁自检：{len(cases)} 个用例（临时仓库在 {TMP_ROOT.name}/）\n")
-    results = [run_case(case, keep=args.keep) for case in cases]
+    try:
+        results = [run_case(case, keep=args.keep) for case in cases]
+    except EnvironmentNotReady as exc:
+        print(f"\n✗ 环境体检没过（这是环境问题，不是门禁结果）：{exc}",
+              file=sys.stderr)
+        return 2
     print(render(results))
 
     failed = [r for r in results if not r.ok]

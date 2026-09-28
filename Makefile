@@ -216,8 +216,10 @@ baseline-update:
 recheck:
 	$(PY) scripts/mutant_recheck.py --summary
 
-# 门禁自检：给 15 个钩子各植入一个已知违规，看它到底红不红；再跑一组
-# "干净仓库"对照，确认该放行的时候它也放行。约 10 秒。
+# 门禁自检：给 18 个钩子各植入一个已知违规，看它到底红不红；再跑一组
+# "干净仓库"对照，确认该放行的时候它也放行。外加浏览器冒烟那条 CI 专属关卡
+# （红/绿一对）。约 20 秒 —— 前端三条要 web/node_modules，冒烟要 Qdrant；
+# 缺环境时它以退出码 2 明说，不会把"跑不起来"当成"门禁生效了"。
 # 什么时候跑：改了 .pre-commit-config.yaml 或任何一个 scripts/*_check|guard|lint 之后。
 # 想确认这把自检本身还灵：把 scripts/lint_layers.py 的 main 开头加一行 `return 0`，
 # 它必须报"期望红 实际绿"并退出 1 —— 报不出来说明自检瞎了，比门禁瞎了更糟。
@@ -227,7 +229,7 @@ gate-selftest:
 # --- 提交门禁 ---
 # 装好之后，每次 git commit 会自动跑：文本/密钥检查 → pytest → CRAP。
 # 想临时跳过某次提交：git commit --no-verify（别养成习惯）。
-# 装两步：commit 前那 15 个钩子，外加一个 post-commit 提醒
+# 装两步：commit 前那 18 个钩子，外加一个 post-commit 提醒
 # （提醒"这次改动落在变异覆盖范围内"，它拦不住也拦不了，只能说一声）
 hooks:
 	uv run pre-commit install

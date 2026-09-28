@@ -84,11 +84,15 @@ make hooks        # = uv run pre-commit install
 make hooks-run    # 不提交，手动跑一遍全部钩子（排查或提交前自查）
 ```
 
-15 个钩子，按"从便宜到贵"排：大文件/冲突/JSON/YAML/AST → 行尾空白/文件末尾换行
+18 个钩子，按"从便宜到贵"排：大文件/冲突/JSON/YAML/AST → 行尾空白/文件末尾换行
 （`end-of-file-fixer`）→
 **私钥检测**（`detect-private-key`，只认 PEM）→ **令牌扫描**（API key/token 形态，
 `src/secret_patterns.py` 那一套）→ 位置与分层 → 规模 → **写入边界** → pytest →
-CRAP → 孤儿模块。
+CRAP → 孤儿模块 → **eslint / tsc / vitest**（三条只对 `web/` 生效，v0.9 起）。
+
+前端那三条要求 PATH 里有 pnpm 且 `web/node_modules` 已装（`make ui`）——**缺环境时
+它们红，而不是跳过**：跳过的门禁等于没有（NFR-012 的取舍）。浏览器冒烟不进提交钩子，
+它要真后端 + 真 Qdrant、几十秒，只留在 CI。
 
 - **pytest 挂了会直接停下**（`fail_fast`）—— 否则 CRAP 会拿一份残缺的
   coverage.xml 判门禁，凭空报出一堆不存在的 crappy 函数。CRAP 与孤儿检查
@@ -115,19 +119,22 @@ CRAP → 孤儿模块。
   `make boundary-list` 看全表。
 - **同一套门禁在 CI 上再跑一遍**（`.github/workflows/ci.yml`）。pre-commit 挡不住
   `--no-verify`，也挡不住"换了台机器/另一个 agent 会话没装 hooks"，而本项目经常并行
-  开好几个会话。CI 不新增任何判断标准，只跑那 15 个钩子 + `make gate-selftest` ——
+  开好几个会话。CI 不新增任何判断标准，只跑那 18 个钩子 + `make gate-selftest` ——
   后者才是这个文件存在的理由：门禁自己坏了的时候（脚本改错、`files:` 过滤器写宽），
   本地和 CI 都会一路绿着放行，只有"植入违规看它红不红"能发现。
 - **钩子自己也会坏，而且坏得很安静**。改了 `.pre-commit-config.yaml` 或
-  `scripts/` 下任何一个检查脚本之后，跑 `make gate-selftest`（约 10 秒）：
-  它给每个钩子植入一个已知违规，断言"必须红"，再拿一个干净仓库断言"必须绿"。
+  `scripts/` 下任何一个检查脚本之后，跑 `make gate-selftest`（约 20 秒；前端三条
+  要 `web/node_modules`，浏览器冒烟那条要 Qdrant —— 缺环境会以退出码 2 说清楚，
+  不会伪装成"门禁生效了"）：
+  它给每个钩子植入一个已知违规，断言"必须红"，再拿一个干净仓库断言"必须绿"；
+  浏览器冒烟那条是 CI 专属关卡，也照同样的规矩配了红/绿一对。
 
 改 README 这类非 Python 文件不会触发测试；想临时跳过用 `git commit --no-verify`。
 
 ### 门禁自检
 
 ```sh
-make gate-selftest                  # 33 个用例：18 个"该红" + 15 个"该绿"
+make gate-selftest                  # 41 个用例：22 个"该红" + 19 个"该绿"
 uv run python scripts/gate_selftest.py --why    # 打印每个用例为什么这样设计
 ```
 
@@ -247,7 +254,7 @@ make mutation      # 变异测试：改坏源码，看测试能不能抓到（�
   **这串数字是手写的，没有门禁盯着**——`make crap` 只保证"没有 crappy 函数"，
   不会因为你改了代码而告诉你 README 过期了（变异基线有 `baseline_check.py`，
   CRAP 没有对应的东西）。数字对不上时以 `make crap` 的输出为准。
-  用例数过去同样没人看着：**981 个（980 passed + 1 skipped，2026-09-28 实测
+  用例数过去同样没人看着：**983 个（982 passed + 1 skipped，2026-09-28 实测
   `pytest -q`）**——**这是 Python 侧的数**；在本轮核对前它停在"844"上，正是这条
   "没有门禁"的后果。现在
   `make baseline` 会核对这一段的**收集数**（括号里那两个数是那天的实测快照；

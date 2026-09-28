@@ -58,9 +58,10 @@ make mutation      # 变异测试（mutmut），默认只打核心链路（内�
 make baseline      # 只核对不重跑：README 里的分数还准不准 + 哪些文件比上次跑批新
 make baseline-update  # 认可复核结果后，把真实数字写回 README 的基线那句话
 make recheck       # 分族统计存活变异体（mutmut 之外的另一个 oracle；--run 才改源码）
-make hooks         # 装 pre-commit：每次 commit 自动跑 15 个钩子（CI 上还有一层）
+make hooks         # 装 pre-commit：每次 commit 自动跑 18 个钩子（CI 上还有一层）
 make hooks-run     # 不提交，手动跑一遍全部钩子（排查或提交前自查）
-make gate-selftest # 门禁自检：给每个钩子植入违规，看它到底红不红（约 10 秒）
+make gate-selftest # 门禁自检：给每个钩子（+浏览器冒烟那条 CI 关卡）植入违规，看它
+                   # 到底红不红（约 20 秒；前端三条要 web/node_modules，冒烟要 Qdrant）
 make rerun-overlap [D=2026-09-24] [ARGS="--threshold 0.80"]  # 只读：同日重跑重叠度（FR-007 待澄清项的实测）
 ```
 
@@ -103,7 +104,8 @@ scripts/secret_scan.py      # 令牌扫描门禁：提交物里出现 API key/to
 scripts/mutation_selfcheck.py  # 变异自检 canary（改坏源码看测试红不红）
 scripts/mutant_recheck.py      # 把存活变异体手工打进源码重跑测试：分族 + 逐条判决（mutmut 之外的另一个 oracle）
 scripts/baseline_check.py      # 文档基线核对：mutants/ 真实结果 vs README 写死的数字
-scripts/gate_selftest.py       # 门禁自检：给 15 个钩子各植入一个违规，断言它真会红
+scripts/gate_selftest.py       # 门禁自检：给 18 个钩子各植入一个违规，断言它真会红；
+                               # 外加浏览器冒烟那条 CI 专属关卡（红/绿各一条）
 scripts/rerun_overlap_report.py # 同日重跑重叠度（只读 Qdrant）：NN 分布 vs novelty_threshold
 scripts/batch_edge_probe.py  # 跨批关联边（只读 Qdrant）：同批/跨批/跨运行三组的边有没有（ADR-12 观测项）
 scripts/fake_ark_server.py   # 假 Ark（OpenAI-compatible embeddings 桩）：e2e 冒烟用，

@@ -1,7 +1,7 @@
 # 提交门禁的第二层。
 #
-# 这里跑的**不是**另一套检查，而是同一套：`.pre-commit-config.yaml` 那 15 个钩子
-# （14 拦人 + 1 个 post-commit 提醒），外加 `scripts/gate_selftest.py`（门禁自检）。
+# 这里跑的**不是**另一套检查，而是同一套：`.pre-commit-config.yaml` 那 18 个钩子
+# （外加 1 个 post-commit 提醒），以及 `scripts/gate_selftest.py`（门禁自检）。
 # 分工是——
 #
 #   pre-commit：本地，快，但 `--no-verify` 就能绕，而且换台机器 / 换一个
@@ -64,13 +64,12 @@ jobs:
           docker compose logs --tail 40 >&2
           exit 1
 
-      - name: 跑全部提交门禁（pre-commit 阶段那 14 个）
-        run: uv run pre-commit run --all-files
-
-      - name: 门禁自检 —— 植入违规，证明每个钩子还会红
-        run: uv run python scripts/gate_selftest.py
-
-      # --- v0.9 前端（ADR-21 / NFR-012）：产物不入库，所以 CI 必须能从头构建并跑通 ---
+      # --- v0.9 前端（ADR-21 / NFR-012）---
+      #
+      # 位置变了：Node / pnpm / 依赖 / 浏览器内核**搬到了提交门禁之前**。v0.9 起的
+      # 提交钩子里有三条前端钩子（eslint / tsc / vitest），gate-selftest 还多了一对
+      # 真跑浏览器的用例 —— 前置不做完，那两步会因为"找不到 pnpm / 没装内核"而红，
+      # 而那种红是环境问题、不是代码问题（自检会用退出码 2 把它和"拦住了"分开）。
       #
       # Node 版本从 mise.toml 读，**不在 CI 里另抄一份** —— 这个文件踩过：最初写的
       # `pip install uv==<当时 mise.toml 里的值>` 在 mise.toml 升级后 13 秒即红。
@@ -91,17 +90,21 @@ jobs:
       - name: 前端依赖（lockfile 冻结）
         run: pnpm --dir web install --frozen-lockfile
 
+      # 产物不入库，所以每次都得真的建出来：早一步撞出构建问题，比等浏览器内核装完、
+      # 到 e2e 的 webServer 里才撞出来便宜。
       - name: 前端构建（顺带证明产物能从零构建出来）
         run: pnpm --dir web build
 
-      - name: 前端三门（lint / 类型 / 单测）
-        run: |
-          pnpm --dir web lint
-          pnpm --dir web typecheck
-          pnpm --dir web test
-
       - name: Playwright 浏览器内核
         run: pnpm --dir web exec playwright install --with-deps chromium
+
+      # v0.9 起这 18 个钩子里含前端三条（eslint / tsc / vitest）—— 原先单独的
+      # "前端三门"步骤删掉了：钩子已经跑过同一套命令，再跑一遍只是让 CI 更慢。
+      - name: 跑全部提交门禁（pre-commit 阶段那 18 个）
+        run: uv run pre-commit run --all-files
+
+      - name: 门禁自检 —— 植入违规，证明每个钩子（含浏览器冒烟那条）还会红
+        run: uv run python scripts/gate_selftest.py
 
       # 8 步验收要真后端 + 真 Qdrant（上面已经起过），Playwright 的 webServer 会自己拉 uvicorn。
       - name: 8 步验收（AC-018~021）

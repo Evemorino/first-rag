@@ -1,9 +1,9 @@
 """scripts/gate_selftest.py 的单元测试。
 
-它守的是"守门的人"：13 个 pre-commit 钩子到底还会不会拦人。所以这里的测试
-只检查用例表本身的结构与判定逻辑，**不真跑钩子**（那要 9 秒，是 `make
-gate-selftest` 的事）。重点防的是用例表和真实配置之间各走各的：
-配置里加了钩子、用例表没跟上，自检会安静地少测一个门禁。
+它守的是"守门的人"：18 个 pre-commit 钩子到底还会不会拦人，外加一条 CI 专属关卡
+（浏览器冒烟，不进提交钩子）。所以这里的测试只检查用例表本身的结构与判定逻辑，
+**不真跑**（那要 20 秒，是 `make gate-selftest` 的事）。重点防的是用例表和真实
+配置之间各走各的：配置里加了钩子、用例表没跟上，自检会安静地少测一个门禁。
 """
 
 import xml.etree.ElementTree as ET
@@ -36,6 +36,10 @@ def hook_ids_in_config() -> set[str]:
 
 RED_CASES = [c for c in gate_selftest.CASES if c.expect == "red"]
 GREEN_CASES = [c for c in gate_selftest.CASES if c.expect == "green"]
+# CI 专属关卡（command=）不是 .pre-commit-config.yaml 里的钩子：它用命令行表达，
+# 配置同步的两条判据要把它排除 —— 否则"配置里每个钩子都有用例"会变成
+# "用例表里每个标签都得在配置里"，那条 CI 关卡就永远进不来。
+HOOK_CASES = [c for c in gate_selftest.CASES if not c.command]
 
 
 # --- 用例表与配置的同步 ---
@@ -43,7 +47,7 @@ GREEN_CASES = [c for c in gate_selftest.CASES if c.expect == "green"]
 
 def test_every_hook_in_config_has_a_case():
     """配置里每个会拦人的钩子都得有用例，否则自检会漏掉它。"""
-    covered = {case.hook for case in gate_selftest.CASES}
+    covered = {case.hook for case in HOOK_CASES}
     # post-commit 的提醒钩子不拦人（退出码恒 0），不在这个自检的范围内
     missing = hook_ids_in_config() - covered - {"mutation-reminder"}
     assert not missing, f"这些钩子没有任何自检用例：{sorted(missing)}"
@@ -52,8 +56,35 @@ def test_every_hook_in_config_has_a_case():
 def test_every_case_hook_exists_in_config():
     """反过来：用例里写的钩子必须在配置里，否则永远只能测到"配置里没有"。 """
     known = hook_ids_in_config()
-    unknown = {case.hook for case in gate_selftest.CASES} - known
+    unknown = {case.hook for case in HOOK_CASES} - known
     assert not unknown, f"用例引用了配置里不存在的钩子：{sorted(unknown)}"
+
+
+def test_command_cases_are_not_hook_ids():
+    """CI 专属关卡不能顺手借一个钩子 id 当名字。
+
+    借了的话，上面那条"配置里的钩子都有用例"会被它顶替掉 —— 配置里的那个钩子
+    其实一个用例都没有，而判据是绿的。
+    """
+    command_cases = [case for case in gate_selftest.CASES if case.command]
+
+    assert command_cases, "CI 专属关卡（浏览器冒烟）应当有用例"
+    assert not ({case.hook for case in command_cases} & hook_ids_in_config())
+
+
+def test_full_stack_cases_bring_what_they_need():
+    """跑命令的用例必须声明它要的脚手架，否则失败原因是"环境没装"而不是"抓到了"。
+
+    这不是假想：第一版 e2e 用例就是这么假的 —— 临时仓库里没有 .venv，webServer
+    起不来，而"起不来"也是非 0，于是红灯用例"通过"了。是同一批里的绿对照把它顶出来的。
+    """
+    for case in gate_selftest.CASES:
+        if case.command:
+            assert case.web and case.backend, (
+                f"{case.hook} 跑的是命令，却没声明 web/backend 脚手架"
+            )
+        if case.hook.startswith("web-"):
+            assert case.web, f"{case.hook} 没声明 web=True，临时仓库里不会有前端工程"
 
 
 def test_every_hook_has_both_a_red_and_a_green_case():
